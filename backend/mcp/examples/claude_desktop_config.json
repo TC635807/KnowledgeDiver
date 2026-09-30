@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "knowledgediver": {
+      "command": "D:/KnowledgeDiver/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "backend.mcp",
+        "--username",
+        "<你的KD用户名>",
+        "--session",
+        "default"
+      ],
+      "cwd": "D:/KnowledgeDiver",
+      "env": {
+        "PYTHONPATH": "D:/KnowledgeDiver",
+        "PYTHONIOENCODING": "utf-8",
+        "KD_MCP_USERNAME": "<你的KD用户名>",
+        "KD_MCP_SESSION": "default"
+      }
+    }
+  }
+}

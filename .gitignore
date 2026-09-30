@@ -1,0 +1,68 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+env/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ── Node / 前端 ─────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+frontend/dist/
+.cache/
+
+# ── 编辑器 / 操作系统 ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── 运行时数据（各部署实例自行生成，不入库）─────────────────────────────────
+.env
+.env.*
+!.env.example
+*.log
+cards/
+Hub/
+outputs/
+data/*.db*
+data/avatars/
+data/users.json
+backend/share/tokens.json
+
+# ── 浏览器与抓取缓存 ────────────────────────────────────────────────────────
+.playwright/
+chrome-*.zip
+
+# ── 模型权重（体积大，按 README 自行下载；仅保留占位文件）────────────────────
+models/*
+!models/.gitkeep

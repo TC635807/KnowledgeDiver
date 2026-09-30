@@ -1,0 +1,108 @@
+.tutorial-popover {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  z-index: 9999;
+  max-width: 320px;
+  width: calc(100vw - 40px);
+  background: var(--bg-secondary, #111827);
+  border: 1px solid var(--border, #374151);
+  border-left: 3px solid var(--accent, #7c3aed);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  animation: tutorial-popover-enter 0.3s ease-out;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.tutorial-popover--exit {
+  animation: tutorial-popover-exit 0.25s ease-in forwards;
+}
+
+@keyframes tutorial-popover-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tutorial-popover-exit {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+}
+
+.tutorial-popover__body {
+  padding: 14px 16px 12px;
+}
+
+.tutorial-popover__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text, #e5e7eb);
+}
+
+.tutorial-popover__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px 10px;
+  border-top: 1px solid var(--border, #374151);
+  background: var(--bg, #030712);
+}
+
+.tutorial-popover__counter {
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+  min-width: 32px;
+}
+
+.tutorial-popover__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tutorial-popover__btn {
+  padding: 5px 14px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s, opacity 0.15s;
+  line-height: 1.4;
+}
+
+.tutorial-popover__btn--next {
+  background: var(--accent, #7c3aed);
+  color: #fff;
+}
+
+.tutorial-popover__btn--next:hover {
+  background: var(--accent-hover, #6d28d9);
+}
+
+.tutorial-popover__btn--close {
+  background: transparent;
+  color: var(--text-secondary, #9ca3af);
+  border: 1px solid var(--border, #374151);
+}
+
+.tutorial-popover__btn--close:hover {
+  background: var(--border, #374151);
+  color: var(--text, #e5e7eb);
+}
+
+@media (max-width: 768px) {
+  .tutorial-popover {
+    bottom: 76px;
+    right: 12px;
+    max-width: 280px;
+  }
+}

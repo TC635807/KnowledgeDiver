@@ -1,0 +1,255 @@
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 80%, rgba(139, 92, 246, 0.05) 0%, transparent 50%),
+    var(--bg);
+  padding: 20px;
+}
+
+.auth-container {
+  width: 100%;
+  max-width: 420px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), 0 0 0 1px var(--glass-border);
+  padding: 36px 32px;
+  animation: fadeInUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* ── 品牌区 ── */
+.auth-brand {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.auth-brand__icon {
+  font-size: 44px;
+  display: block;
+  margin-bottom: 10px;
+  filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.4));
+}
+
+.auth-brand__name {
+  margin: 0 0 6px 0;
+  font-size: 26px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent-light), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.auth-brand__tagline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── 切换标签 ── */
+.auth-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 24px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  border: 1px solid var(--border);
+}
+
+.auth-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 8px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.auth-tab:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.auth-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-tab--active {
+  background: var(--accent);
+  box-shadow: var(--shadow-glow-sm);
+}
+
+.auth-tab__icon {
+  font-size: 20px;
+  transition: transform var(--transition-base);
+}
+
+.auth-tab--active .auth-tab__icon {
+  transform: scale(1.15);
+}
+
+.auth-tab__label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.auth-tab--active .auth-tab__label {
+  color: #fff;
+}
+
+.auth-tab__desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: color var(--transition-fast);
+}
+
+.auth-tab--active .auth-tab__desc {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* ── 模式标题 ── */
+.auth-mode-title {
+  text-align: center;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin-bottom: 20px;
+}
+
+/* ── 表单 ── */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.auth-field input {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(10, 10, 26, 0.6);
+  color: var(--text);
+  font-size: 14px;
+  transition: all var(--transition-fast);
+}
+
+.auth-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.auth-field input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auth-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.auth-error {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 13px;
+  animation: fadeIn 0.2s ease;
+}
+
+/* ── 提交按钮 ── */
+.auth-submit {
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  margin-top: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-submit--login {
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+}
+
+.auth-submit--login:hover:not(:disabled) {
+  box-shadow: var(--shadow-glow);
+  transform: translateY(-1px);
+}
+
+.auth-submit--register {
+  background: linear-gradient(135deg, #059669, #047857);
+}
+
+.auth-submit--register:hover:not(:disabled) {
+  box-shadow: 0 0 24px rgba(5, 150, 105, 0.35);
+  transform: translateY(-1px);
+}
+
+.auth-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* ── 底部切换链接 ── */
+.auth-switch {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.auth-switch button {
+  background: none;
+  border: none;
+  color: var(--accent-light);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0;
+  transition: color var(--transition-fast);
+}
+
+.auth-switch button:hover:not(:disabled) {
+  color: #c4b5fd;
+}
+
+.auth-switch button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

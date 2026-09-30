@@ -1,0 +1,16 @@
+[Unit]
+Description=KnowledgeDiver Backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/knowledgediver
+Environment="PYTHONPATH=/opt/knowledgediver"
+Environment="HF_ENDPOINT=https://hf-mirror.com"
+Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/knowledgediver/.playwright"
+ExecStart=/opt/knowledgediver/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

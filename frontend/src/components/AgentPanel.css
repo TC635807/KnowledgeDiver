@@ -1,0 +1,143 @@
+/* AgentPanel — 最右侧常驻对话栏（嵌入式列，非覆盖层） */
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--glass-bg, rgba(15, 15, 35, 0.65));
+}
+
+.agent-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.agent-panel__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #e5e7eb);
+}
+
+.agent-panel__btn {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary, #9ca3af);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.agent-panel__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text, #e5e7eb);
+}
+
+.agent-panel__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.agent-panel__messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.agent-panel__empty {
+  color: var(--text-secondary, #9ca3af);
+  opacity: 0.6;
+  font-size: 13px;
+  text-align: center;
+  margin-top: 24px;
+}
+
+.agent-panel__input-area {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.agent-panel__input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: var(--input-bg, rgba(255, 255, 255, 0.04));
+  color: var(--text, #e5e7eb);
+  font-size: 13px;
+  outline: none;
+  transition: border 0.15s;
+}
+
+.agent-panel__input:focus {
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.agent-panel__input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.agent-panel__send {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(139, 92, 246, 0.35);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.agent-panel__send:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.5);
+}
+
+.agent-panel__send:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── light theme ── */
+[data-theme="light"] .agent-panel__title {
+  color: rgba(0, 0, 0, 0.75);
+}
+
+[data-theme="light"] .agent-panel__btn {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.03);
+  color: rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="light"] .agent-panel__header,
+[data-theme="light"] .agent-panel__input-area {
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .agent-panel__input {
+  background: rgba(0, 0, 0, 0.03);
+  color: rgba(0, 0, 0, 0.8);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .agent-panel__input::placeholder {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] .agent-panel__empty {
+  color: rgba(0, 0, 0, 0.4);
+}

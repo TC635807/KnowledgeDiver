@@ -1,0 +1,102 @@
+.avatar-crop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: avatar-crop-fadein 0.2s ease;
+}
+
+@keyframes avatar-crop-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.avatar-crop-modal {
+  background: var(--bg-elevated, #1e1c3a);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.6);
+  max-width: 360px;
+  width: 90vw;
+}
+
+.avatar-crop-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-h, #f5f3ff);
+}
+
+.avatar-crop-canvas {
+  border-radius: 50%;
+  cursor: grab;
+  touch-action: none;
+}
+.avatar-crop-canvas:active {
+  cursor: grabbing;
+}
+
+.avatar-crop-hint {
+  font-size: 11px;
+  color: var(--text-muted, #5c5878);
+}
+
+.avatar-crop-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border, rgba(255,255,255,0.08));
+  border-radius: 2px;
+  outline: none;
+}
+.avatar-crop-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent, #8b5cf6);
+  cursor: pointer;
+}
+
+.avatar-crop-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.avatar-crop-btn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.avatar-crop-btn--cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text, #e4e2f0);
+}
+.avatar-crop-btn--cancel:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.avatar-crop-btn--confirm {
+  background: var(--accent, #8b5cf6);
+  color: #fff;
+}
+.avatar-crop-btn--confirm:hover {
+  background: var(--accent-hover, #7c3aed);
+}
