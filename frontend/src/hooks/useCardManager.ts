@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { Card } from '../types/card'
 import { authFetchWithToken } from '../api/auth'
+import { showToast } from '../utils/toast'
 
 export interface UseCardManagerReturn {
   cards: Card[]
@@ -76,6 +77,8 @@ export function useCardManager(
         })
         .catch((err) => {
           console.error('[loadCards] Failed to load cards:', err)
+          // 不再静默：否则 401/网络问题永远表现为"空列表"（契约 §3.4）
+          showToast('卡片列表加载失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
         })
         .finally(() => {
           refreshingRef.current = false

@@ -1,19 +1,23 @@
 """
 AI 配置加载模块。
 
-从 backend.config 读取全局默认值，支持环境变量覆盖。
+优先级：.env 文件（前端「API 配置」直接改写它）
+      > 进程环境变量
+      > backend/config.py 默认值
 """
 
-from backend.config import AI_API_URL, AI_API_KEY, AI_MODEL, AI_PROXY_PORT, AI_CONCURRENCY
+from backend.config import AI_PROXY_PORT, AI_CONCURRENCY
+from backend.services.ai_settings import effective_settings
 from .provider import AIConfig
 
 
 def load_config() -> AIConfig:
-    """加载 AI 配置，环境变量优先于全局默认值。"""
+    """加载 AI 配置（每次调用都重新读取 .env，改配置无需重启进程）。"""
+    settings = effective_settings()
     return AIConfig(
-        api_url=AI_API_URL,
-        api_key=AI_API_KEY,
-        model=AI_MODEL,
+        api_url=settings["api_url"],
+        api_key=settings["api_key"],
+        model=settings["model"],
         proxy_port=AI_PROXY_PORT,
         api_concurrency=AI_CONCURRENCY,
     )

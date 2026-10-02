@@ -1,4 +1,5 @@
-import { authFetchWithToken, getToken } from './auth';
+import { authFetchWithToken } from './auth';
+import { getLocalToken } from './localAccount';
 
 export interface CardScore {
   card_id: string;
@@ -125,7 +126,7 @@ export async function startGapDrivenExploration(
     searchProvider?: string;
   } = {},
 ): Promise<string> {
-  const token = getToken();
+  const token = getLocalToken();
   if (!token) throw new Error('未认证');
 
   const params = new URLSearchParams({

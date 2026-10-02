@@ -31,3 +31,12 @@ pytest==9.0.3
 pytest-asyncio==1.3.0
 pytest-cov==7.1.0
 coverage==7.13.5
+
+# ── 关于 PyTorch（重要）────────────────────────────────────────────────────
+# 本项目的嵌入模型 bge-small-zh-v1.5 只做 CPU 推理，但 PyPI 上 Linux 版 torch 是
+# CUDA 构建，会连带安装 16 个 nvidia-* 包（实测合计约 2.7GB，venv 会因此膨胀到 5.7GB）。
+# 推荐先单独装 CPU 版（约 180-200MB），再装本文件：
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+#   pip install -r requirements.txt
+# start.sh / server_start.sh 默认已按此顺序安装；需要 GPU 版时设 TORCH_CPU_ONLY=0。
+

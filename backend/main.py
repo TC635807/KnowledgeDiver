@@ -16,9 +16,11 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from backend.config import CORS_ORIGINS
+from backend.config import CORS_ORIGINS, CORS_ORIGIN_REGEX
 from backend.rate_limit import limiter
+from backend.remote.proxy import proxy as remote_proxy
 from backend.scraper.fetcher import close_crawler
+from backend.security import OriginGuardMiddleware
 from backend.routes.pipeline import router as pipeline_router
 from backend.routes.links import router as links_router
 from backend.routes.classification import router as classification_router
@@ -30,6 +32,8 @@ from backend.routes.session_io import router as session_io_router
 from backend.routes.share import router as share_router
 from backend.routes.hub import router as hub_router
 from backend.routes.documents import router as documents_router
+from backend.routes.local import router as local_router
+from backend.routes.settings import router as settings_router
 from backend.agent.routes.agent import router as agent_router
 try:
     from backend.routes.export import router as export_router
@@ -66,10 +70,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# CORS — 允许前端跨域访问
+# CORS — 只放行**回环白名单**（红队 §1.1：绝不再用 "*"）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in CORS_ORIGINS.split(",")],
+    allow_origins=[origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()],
+    allow_origin_regex=CORS_ORIGIN_REGEX,   # 端口可变时兜底，仍然只放行回环来源
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,6 +82,10 @@ app.add_middleware(
 
 # 安全标头
 app.add_middleware(SecurityHeadersMiddleware)
+
+# 跨源纵深防御：Origin / Sec-Fetch-Site 不在白名单 → 403（CORS 只挡读取，不挡执行）
+# 最后添加 => 位于最外层，先于其它中间件与业务路由执行
+app.add_middleware(OriginGuardMiddleware)
 
 
 # ── 速率限制 ──────────────────────────────────────────────────────
@@ -125,8 +134,21 @@ async def general_exception_handler(
     )
 
 
+def include_remote_proxy(target_app: FastAPI, remote) -> bool:
+    """KD_SERVER_URL 为空 → 整个代理不注册（纯本地模式，行为回到改造前）。
+
+    非空时注册在本地 auth/hub 之前（FastAPI 按注册顺序匹配）；只注册白名单路径，
+    因此本地 /api/sessions、/api/cards、/api/pipeline 不会被转发。
+    """
+    if not remote.enabled:
+        return False
+    target_app.include_router(remote.router)
+    return True
+
+
 # 注册所有路由模块
-app.include_router(auth_router)           # 认证：注册/登录/个人信息/头像
+include_remote_proxy(app, remote_proxy)   # 身份 + 论坛 + 迁移：转发到官方服务器
+app.include_router(auth_router)           # 认证：注册/登录/本地会话/头像
 app.include_router(pipeline_router)       # 流水线：收集/延申搜索 SSE 流 + 任务管理
 app.include_router(links_router)          # 链接：卡片双向链接 CRUD
 app.include_router(classification_router) # 分类：AI 自动分类/重分类/树
@@ -137,6 +159,8 @@ app.include_router(session_io_router)     # 会话导入导出：ZIP 下载/上�
 app.include_router(share_router)          # 分享：分享链接 token
 app.include_router(hub_router)            # Hub 论坛：浏览/分享/导入/点赞/评论
 app.include_router(documents_router)      # 文档上传：上传文件→AI 分析→三层卡片
+app.include_router(local_router)          # 本地写入：从 Hub 导入到本地工作区
+app.include_router(settings_router)       # 设置：AI 接口配置（读写/测试连接/重置）
 app.include_router(agent_router)          # Agent：SSE 流式对话 + 工具调用
 if export_router is not None:
     app.include_router(export_router)     # 导出：Markdown 导出
@@ -161,4 +185,5 @@ async def shutdown():
     logger = logging.getLogger(__name__)
     logger.info("[Shutdown] 正在释放资源...")
     await close_crawler()
+    await remote_proxy.aclose()
     logger.info("[Shutdown] 资源释放完毕")

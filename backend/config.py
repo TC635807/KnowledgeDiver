@@ -10,8 +10,11 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import os
+import secrets
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
@@ -22,14 +25,19 @@ load_dotenv()
 # AI 提供商配置
 # ═══════════════════════════════════════════════════════════════════
 
-AI_API_URL: str = os.getenv("AI_API_URL", "https://api.deepseek.com")
-AI_API_KEY: str = os.getenv("AI_API_KEY", "")
-AI_MODEL: str = os.getenv("AI_MODEL", "deepseek-v4-flash")
+# AI 代码默认值（具名常量：既作为 os.getenv 的兜底，也作为前端「API 配置」
+# 里「恢复默认」的回落目标，保证默认值只有一个来源）
+AI_API_URL_DEFAULT: str = "https://api.deepseek.com"
+AI_API_KEY_DEFAULT: str = ""
+AI_MODEL_DEFAULT: str = "deepseek-v4-flash"
+
+AI_API_URL: str = os.getenv("AI_API_URL", AI_API_URL_DEFAULT)
+AI_API_KEY: str = os.getenv("AI_API_KEY", AI_API_KEY_DEFAULT)
+AI_MODEL: str = os.getenv("AI_MODEL", AI_MODEL_DEFAULT)
 AI_CONCURRENCY: int = int(os.getenv("AI_CONCURRENCY", "2"))
 AI_PROXY_PORT: int = int(os.getenv("PROXY_PORT", "0"))
 
-# Agent 专用模型（默认与 AI_MODEL 一致，统一绑定 .env 的 AI_MODEL）
-AGENT_MODEL: str = os.getenv("AGENT_MODEL", AI_MODEL)
+# 卡片生成与 Agent 统一使用 AI_MODEL（不再有独立的 Agent 模型配置）
 # Agent 思考强度（deepseek-v4-flash 支持 low/high/max；思考模式开启时 temperature 不生效）
 AGENT_REASONING_EFFORT: str = os.getenv("AGENT_REASONING_EFFORT", "high")
 # 实验开关：full=完整 Agent；no_quality=移除质量工具与树注入（消融条件）。
@@ -188,6 +196,27 @@ DEFAULT_SESSION_ID: str = "default"
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 云端接入（客户端 → 官方服务器）与内置本地账号
+# ═══════════════════════════════════════════════════════════════════
+
+# 官方服务器地址。空串 = 整个反向代理不启用（纯本地模式，行为回到改造前）
+KD_SERVER_URL_DEFAULT: str = "https://knowledgediver.cloud"
+KD_SERVER_URL: str = os.getenv("KD_SERVER_URL", KD_SERVER_URL_DEFAULT).strip().rstrip("/")
+if KD_SERVER_URL in ("/", "http:/", "https:/"):
+    KD_SERVER_URL = ""
+
+# 反向代理超时（秒）：普通身份/论坛请求用 READ；上传下载单独放宽
+KD_REMOTE_CONNECT_TIMEOUT: float = float(os.getenv("KD_REMOTE_CONNECT_TIMEOUT", "3"))
+KD_REMOTE_READ_TIMEOUT: float = float(os.getenv("KD_REMOTE_READ_TIMEOUT", "5"))
+
+# 内置本地账号（v3）：开机即为它签一个本地 JWT，本地工作区始终有身份，
+# 因此不需要 HTTPBearer(auto_error=False)，也不需要「无头即游客」放行分支。
+LOCAL_ACCOUNT: bool = os.getenv("LOCAL_ACCOUNT", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+LOCAL_ACCOUNT_USER: str = os.getenv("LOCAL_ACCOUNT_USER", "local").strip() or "local"
+
+# ═══════════════════════════════════════════════════════════════════
 # 服务 (Services) 配置
 # ═══════════════════════════════════════════════════════════════════
 
@@ -198,13 +227,46 @@ MAX_CONCURRENT_TASKS: int = 5       # 每用户最大并发搜索任务数
 RATE_LIMIT_DEFAULT: str = os.getenv("RATE_LIMIT_DEFAULT", "30/minute")
 RATE_LIMIT_AUTH: str = os.getenv("RATE_LIMIT_AUTH", "5/minute")
 
-# CORS
-CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "*")
+# CORS：从通配 "*" 收紧为**回环白名单**（红队 §1.1 —— 否则任意网页都能跨源读写本机工作区，
+# 其中 PUT /api/settings/ai 可把 api_url 改到攻击者地址从而偷走 AI Key）。
+CORS_ORIGINS_DEFAULT: str = (
+    "http://localhost:3000,http://127.0.0.1:3000,"
+    "http://localhost:8000,http://127.0.0.1:8000"
+)
+CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", CORS_ORIGINS_DEFAULT)
+# 端口可变（vite 自动换端口）时的兜底：仍然只放行回环来源
+CORS_ORIGIN_REGEX: str = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
 # JWT
-JWT_SECRET: str = os.getenv("JWT_SECRET", "")
+# 不再强制 raise：代理链路不需要它，本地账号只需要「有一个」密钥。
+# 缺失时随机生成并告警 —— 随机值仅本进程有效、重启后旧 token 失效，
+# 因此 start.sh 首次启动会把生成的密钥写进 .env（推荐），也可在前端设置里固定。
+JWT_SECRET: str = os.getenv("JWT_SECRET", "").strip()
 if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET environment variable is not set. Please set it in your .env file or system environment.")
+    # 不能每次重启都换随机值：内置本地账号的 token 有 30 天有效期，
+    # 换密钥会让它立刻失效、且前端无法自愈（表现为本地端点全体 401）。
+    # 因此优先复用本机持久化密钥（data/.jwt_secret，已 gitignore），没有才生成一次并落盘。
+    _secret_file = Path(__file__).resolve().parent.parent / "data" / ".jwt_secret"
+    try:
+        if _secret_file.exists():
+            JWT_SECRET = _secret_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        JWT_SECRET = ""
+    if not JWT_SECRET:
+        JWT_SECRET = secrets.token_urlsafe(48)
+        try:
+            _secret_file.parent.mkdir(parents=True, exist_ok=True)
+            _secret_file.write_text(JWT_SECRET, encoding="utf-8")
+            os.chmod(_secret_file, 0o600)
+            logging.getLogger(__name__).warning(
+                "[Config] 未在 .env 设置 JWT_SECRET，已生成并持久化到 %s（本机文件，重启不失效）。"
+                "建议在 .env 中固定 JWT_SECRET（./start.sh 首次启动会自动写入）。",
+                _secret_file,
+            )
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "[Config] 未设置 JWT_SECRET 且无法持久化，已为本次进程随机生成；重启后本地 token 会失效。"
+            )
 JWT_ALGORITHM: str = "HS256"
 JWT_EXPIRATION_HOURS: int = int(os.getenv("JWT_EXPIRATION_HOURS", "4"))
 

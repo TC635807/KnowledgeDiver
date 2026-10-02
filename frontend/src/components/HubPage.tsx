@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import GraphView from './GraphView'
 import { searchHub, getHubSession, likeHubSession, dislikeHubSession, addHubComment, deleteHubComment } from '../api/hub'
+import { isRemoteOffline } from '../api/remote'
+import { showToast } from '../utils/toast'
 import type { HubSessionSummary, HubSessionDetail, HubSortBy, HubComment } from '../types/hub'
 import type { Card } from '../types/card'
 import type { Orientation } from '../hooks/useDeviceOrientation'
@@ -13,6 +15,10 @@ type Props = {
   user: { username: string } | null
   orientation: Orientation
   onGoProfile: (username: string) => void
+  /** 云端可达性；offline 时论坛顶部显示离线提示（本地工作区不受影响） */
+  serverStatus?: 'checking' | 'online' | 'offline'
+  /** 论坛请求失败/成功时回报可达性，用于 UserMenu 与离线提示 */
+  onServerStatus?: (status: 'online' | 'offline') => void
 }
 
 const mobileNavItems: { id: HubMobileTab; label: string; icon: string }[] = [
@@ -21,7 +27,7 @@ const mobileNavItems: { id: HubMobileTab; label: string; icon: string }[] = [
   { id: 'graph', label: '图谱', icon: '📊' },
 ]
 
-const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) => {
+const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile, serverStatus, onServerStatus }) => {
   const [sessions, setSessions] = useState<HubSessionSummary[]>([])
   const [selectedUsername, setSelectedUsername] = useState<string | null>(null)
   const [selectedSessionName, setSelectedSessionName] = useState<string | null>(null)
@@ -35,6 +41,9 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
   const [commentText, setCommentText] = useState('')
   const [commentSubmitting, setCommentSubmitting] = useState(false)
   const [mobileTab, setMobileTab] = useState<HubMobileTab>('browse')
+  const [remoteOffline, setRemoteOffline] = useState(false)
+
+  const offline = remoteOffline || serverStatus === 'offline'
 
   const isPortrait = orientation === 'portrait'
 
@@ -60,12 +69,21 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
     try {
       const result = await searchHub({ query: q ?? query, sort_by: sort ?? sortBy, page_size: 50 })
       setSessions(result)
+      setRemoteOffline(false)
+      if (onServerStatus) onServerStatus('online')
     } catch (err) {
       console.warn('Hub search failed:', err)
+      if (isRemoteOffline(err)) {
+        setRemoteOffline(true)
+        if (onServerStatus) onServerStatus('offline')
+        showToast('离线，连不上服务器；本地工作区不受影响。', 'info')
+      } else {
+        showToast('论坛加载失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+      }
     } finally {
       setLoading(false)
     }
-  }, [query, sortBy])
+  }, [query, sortBy, onServerStatus])
 
   useEffect(() => {
     loadList()
@@ -94,36 +112,58 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
     } catch (err) {
       console.warn('Hub session detail failed:', err)
       setDetail(null)
+      if (isRemoteOffline(err)) {
+        setRemoteOffline(true)
+        if (onServerStatus) onServerStatus('offline')
+      }
     } finally {
       setDetailLoading(false)
     }
   }
 
+  const requireLogin = (): boolean => {
+    if (user) return false
+    showToast('登录 KnowledgeDiver 账号后才能点赞 / 评论 / 分享（浏览与导入无需登录）', 'info')
+    return true
+  }
+
   const handleLike = async () => {
     if (!selectedUsername || !selectedSessionName || !detail) return
+    if (requireLogin()) return
     try {
       const r = await likeHubSession(selectedUsername, selectedSessionName)
       setDetail({ ...detail, manifest: { ...detail.manifest, likes: r.likes, dislikes: r.dislikes } })
-    } catch (err) { console.warn('Hub like failed:', err); /* need login */ }
+    } catch (err) {
+      console.warn('Hub like failed:', err)
+      showToast('点赞失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+    }
   }
 
   const handleDislike = async () => {
     if (!selectedUsername || !selectedSessionName || !detail) return
+    if (requireLogin()) return
     try {
       const r = await dislikeHubSession(selectedUsername, selectedSessionName)
       setDetail({ ...detail, manifest: { ...detail.manifest, likes: r.likes, dislikes: r.dislikes } })
-    } catch (err) { console.warn('Hub dislike failed:', err); /* need login */ }
+    } catch (err) {
+      console.warn('Hub dislike failed:', err)
+      showToast('操作失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+    }
   }
 
   const handleSubmitComment = async () => {
     if (!commentText.trim() || !selectedUsername || !selectedSessionName || !detail) return
+    if (requireLogin()) return
     setCommentSubmitting(true)
     try {
       const r = await addHubComment(selectedUsername, selectedSessionName, commentText.trim())
       const comments = r.comments as HubComment[]
       setDetail({ ...detail, manifest: { ...detail.manifest, comments } })
       setCommentText('')
-    } catch (err) { console.warn('Hub comment submit failed:', err); /* need login */ }
+    } catch (err) {
+      console.warn('Hub comment submit failed:', err)
+      showToast('评论失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+    }
     setCommentSubmitting(false)
   }
 
@@ -133,7 +173,10 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
       const r = await deleteHubComment(selectedUsername, selectedSessionName, index)
       const comments = r.comments as HubComment[]
       setDetail({ ...detail, manifest: { ...detail.manifest, comments } })
-    } catch (err) { console.warn('Hub comment delete failed:', err); /* need login */ }
+    } catch (err) {
+      console.warn('Hub comment delete failed:', err)
+      showToast('删除评论失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+    }
   }
 
   const handleImport = async () => {
@@ -163,6 +206,23 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
         />
         <button className="hub-search__btn" onClick={handleSearch}>搜索</button>
       </div>
+      {offline && (
+        <div
+          data-testid="hub-offline"
+          style={{
+            margin: '8px 0',
+            padding: '8px 10px',
+            borderRadius: 8,
+            background: 'rgba(248,113,113,0.12)',
+            border: '1px solid rgba(248,113,113,0.3)',
+            color: '#fca5a5',
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          离线，连不上服务器（论坛不可用）；本地工作区不受影响。
+        </div>
+      )}
       <div className="hub-sort">
         <button
           className={`hub-sort__btn${sortBy === 'newest' ? ' hub-sort__btn--active' : ''}`}
@@ -211,6 +271,11 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
 
   const sessionDetailContent = (
     <>
+      {offline && (
+        <div data-testid="hub-detail-offline" style={{ marginBottom: 10, color: '#fca5a5', fontSize: 12 }}>
+          离线，连不上服务器。
+        </div>
+      )}
       {!selectedUsername && !detailLoading && (
         <div className="hub-placeholder">← 从左侧选择一个 session 查看详情</div>
       )}
@@ -263,7 +328,7 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
             <button
               className="hub-btn hub-btn-import"
               onClick={handleImport}
-              disabled={importing || !user}
+              disabled={importing}
             >
               {importing ? '导入中...' : '📥 导入到工作区'}
             </button>
@@ -302,7 +367,7 @@ const HubPage: React.FC<Props> = ({ onImport, user, orientation, onGoProfile }) 
               </div>
             )}
             {!user && (
-              <p className="hub-login-hint">登录后可以评论和导入</p>
+              <p className="hub-login-hint">登录后可以点赞和评论（导入到本地工作区无需登录）</p>
             )}
           </div>
         </div>

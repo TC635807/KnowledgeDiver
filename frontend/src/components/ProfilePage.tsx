@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { getUserProfile, getUserSessions, unshareFromHub, type UserProfile } from '../api/hub'
+import { isRemoteOffline } from '../api/remote'
+import { showToast } from '../utils/toast'
 import type { HubSessionSummary } from '../types/hub'
 import type { AuthUser } from '../types/auth'
 import './ProfilePage.css'
@@ -10,9 +12,11 @@ type Props = {
   onBack: () => void
   onImport: (creator: string, sessionName: string) => void
   onViewSession: (creator: string, sessionName: string) => void
+  /** 论坛请求失败/成功时回报云端可达性 */
+  onServerStatus?: (status: 'online' | 'offline') => void
 }
 
-const ProfilePage: React.FC<Props> = ({ username, currentUser, onBack, onImport, onViewSession }) => {
+const ProfilePage: React.FC<Props> = ({ username, currentUser, onBack, onImport, onViewSession, onServerStatus }) => {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [sessions, setSessions] = useState<HubSessionSummary[]>([])
   const [tab, setTab] = useState<'popular' | 'all'>('popular')
@@ -21,17 +25,31 @@ const ProfilePage: React.FC<Props> = ({ username, currentUser, onBack, onImport,
 
   const isOwn = currentUser?.username === username
 
+  const reportFailure = useCallback((err: unknown, what: string) => {
+    if (isRemoteOffline(err)) {
+      if (onServerStatus) onServerStatus('offline')
+      showToast('离线，连不上服务器；本地工作区不受影响。', 'info')
+    } else {
+      showToast(what + '失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
+    }
+  }, [onServerStatus])
+
   useEffect(() => {
     setLoading(true)
     getUserProfile(username)
-      .then(setProfile)
+      .then((p) => {
+        setProfile(p)
+        if (onServerStatus) onServerStatus('online')
+      })
+      .catch((err) => reportFailure(err, '加载用户主页'))
       .finally(() => setLoading(false))
-  }, [username])
+  }, [username, onServerStatus, reportFailure])
 
   const loadSessions = useCallback(() => {
     getUserSessions(username, { sort_by: tab === 'popular' ? 'most_likes' : 'newest', page_size: 50 })
       .then(setSessions)
-  }, [username, tab])
+      .catch((err) => reportFailure(err, '加载用户分享'))
+  }, [username, tab, reportFailure])
 
   useEffect(() => {
     loadSessions()
@@ -46,6 +64,7 @@ const ProfilePage: React.FC<Props> = ({ username, currentUser, onBack, onImport,
       setProfile(prev => prev ? { ...prev, total_sessions: prev.total_sessions - 1 } : null)
     } catch (err) {
       console.error('Failed to delete session:', err)
+      showToast('删除失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
     } finally {
       setDeleting(null)
     }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { PipelineEvent } from '../types/pipeline'
 import { parseSSEMessage } from '../api/stream'
-import { getToken } from '../api/auth'
+import { getLocalToken } from '../api/localAccount'
 
 type SSEHookResult = {
   isConnected: boolean
@@ -20,7 +20,7 @@ export function useSSE(url: string, onMessage: (ev: PipelineEvent) => void, onEr
   useEffect(() => {
     if (!url) return
 
-    const token = getToken()
+    const token = getLocalToken()
     const abortController = new AbortController()
     abortControllerRef.current = abortController
 

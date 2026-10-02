@@ -1,88 +1,39 @@
 import type { AuthResponse, LoginRequest, RegisterRequest, AuthUser } from '../types/auth'
+import { getLocalToken } from './localAccount'
+import { clearServerToken, remoteFetch, setServerToken } from './remote'
 
-const TOKEN_KEY = 'knowledgeDiver.token'
-
+/**
+ * 旧的共用 token 读取口。
+ * @deprecated 本地请求请直接用 api/localAccount.ts 的 getLocalToken()；云端用 api/remote.ts 的 getServerToken()。
+ * 保留此别名只为兼容仍在 import 的调用点（值 = 本地 token，绝不会返回服务器 token）。
+ */
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return getLocalToken()
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
-async function authFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken()
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  }
-  if (token) {
-    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`
-  }
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  })
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: '请求失败' }))
-    const message = extractErrorMessage(error)
-    throw new Error(message)
-  }
-
-  return response.json()
-}
-
-function extractErrorMessage(error: any): string {
-  const detail = error.detail
+export function extractErrorMessage(error: unknown): string {
+  const detail = (error as { detail?: unknown } | null)?.detail
   if (typeof detail === 'string') return detail || '请求失败'
   if (Array.isArray(detail)) {
-    return detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
+    return detail.map((e) => (e && (e as { msg?: string }).msg) || JSON.stringify(e)).join('; ')
   }
   return String(detail || '请求失败')
 }
 
-export async function login(data: LoginRequest): Promise<AuthResponse> {
-  const result = await authFetch<AuthResponse>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
-  setToken(result.access_token)
-  return result
-}
-
-export async function register(data: RegisterRequest): Promise<AuthResponse> {
-  const result = await authFetch<AuthResponse>('/api/auth/register', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
-  setToken(result.access_token)
-  return result
-}
-
-export async function getMe(): Promise<AuthUser> {
-  return authFetch<AuthUser>('/api/auth/me')
-}
-
-export function logout(): void {
-  clearToken()
-}
-
+/**
+ * 本地工作区调用（**始终**附带本地 token）。
+ * 45 处调用点名字不变；失败时抛出的错误带有后端 detail，便于界面直接展示。
+ */
 export async function authFetchWithToken<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken()
+  const token = getLocalToken()
   if (!token) {
-    throw new Error('未认证')
+    throw new Error('本地身份未就绪：请先完成本地登录（POST /api/auth/local-session）')
   }
-  
+
   const headers: Record<string, string> = {
-    'Authorization': `Bearer ${token}`,
+    Authorization: 'Bearer ' + token,
   }
-  // Do not set Content-Type for FormData — the browser sets multipart boundary automatically
+  // FormData 不能手工设置 Content-Type（浏览器要自己加 multipart boundary）
   if (!(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json'
   }
@@ -97,9 +48,40 @@ export async function authFetchWithToken<T>(url: string, options: RequestInit = 
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: '请求失败' }))
-    const message = extractErrorMessage(error)
-    throw new Error(message)
+    throw new Error(extractErrorMessage(error))
   }
 
-  return response.json()
+  if (response.status === 204) return undefined as unknown as T
+  return (await response.json()) as T
+}
+
+// ────────────────────────────────────────────────────────────────
+// 云端账号：一律经本地反向代理白名单，携带 serverToken
+// ────────────────────────────────────────────────────────────────
+
+export async function login(data: LoginRequest): Promise<AuthResponse> {
+  const result = await remoteFetch<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+  setServerToken(result.access_token)
+  return result
+}
+
+export async function register(data: RegisterRequest): Promise<AuthResponse> {
+  const result = await remoteFetch<AuthResponse>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+  setServerToken(result.access_token)
+  return result
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return remoteFetch<AuthUser>('/api/auth/me')
+}
+
+/** 退出云端账号登录（本地身份不受影响）。 */
+export function logout(): void {
+  clearServerToken()
 }

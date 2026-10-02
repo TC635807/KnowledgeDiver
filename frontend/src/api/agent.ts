@@ -1,4 +1,5 @@
-import { authFetchWithToken, getToken } from './auth';
+import { authFetchWithToken } from './auth';
+import { getLocalToken } from './localAccount';
 
 // SSE 流 300s 无任何数据视为卡死（后端 AGENT_TIMEOUT=300s 兜底 + 前端主动中止，时长对齐）
 const AGENT_STALL_TIMEOUT_MS = 300_000;
@@ -47,7 +48,7 @@ export async function clearAgentContext(sessionId: string): Promise<boolean> {
 
 export async function injectLoopMessage(sessionId: string, message: string): Promise<boolean> {
   try {
-    const token = getToken();
+    const token = getLocalToken();
     if (!token) return false;
     const resp = await fetch('/api/agent/chat', {
       method: 'POST',
@@ -196,7 +197,7 @@ export async function* agentChatSSE(
   message: string,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentSSEEvent> {
-  const token = getToken();
+  const token = getLocalToken();
   if (!token) throw new Error('未认证');
 
   // 内部 controller：合并调用方 signal（取消/卸载）与卡死超时（300s 无数据）两种中止源
@@ -231,7 +232,7 @@ export async function* agentStreamSSE(
   sessionId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentSSEEvent> {
-  const token = getToken();
+  const token = getLocalToken();
   if (!token) throw new Error('未认证');
 
   const controller = new AbortController();

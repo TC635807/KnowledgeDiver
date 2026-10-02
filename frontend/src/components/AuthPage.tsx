@@ -4,7 +4,14 @@ import './AuthPage.css'
 
 type AuthMode = 'login' | 'register'
 
-export const AuthPage: React.FC = () => {
+type Props = {
+  /** 登录/注册成功后回调（通常导航回工作区） */
+  onDone?: () => void
+  /** 「先不登录，进入本地工作区」；不传则不显示该入口 */
+  onBack?: () => void
+}
+
+export const AuthPage: React.FC<Props> = ({ onDone, onBack }) => {
   const [mode, setMode] = useState<AuthMode>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -40,6 +47,7 @@ export const AuthPage: React.FC = () => {
       } else {
         await register(username, password)
       }
+      if (onDone) onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败')
     } finally {
@@ -54,6 +62,9 @@ export const AuthPage: React.FC = () => {
           <span className="auth-brand__icon">🧠</span>
           <h1 className="auth-brand__name">KnowledgeDiver</h1>
           <p className="auth-brand__tagline">AI 驱动的知识收集系统</p>
+          <p className="auth-brand__tagline" style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+            这里登录的是 KnowledgeDiver 云端账号（用于论坛与头像）；本地工作区无需登录。
+          </p>
         </div>
 
         <div className="auth-tabs" role="tablist">
@@ -144,6 +155,14 @@ export const AuthPage: React.FC = () => {
             </span>
           )}
         </div>
+
+        {onBack && (
+          <div className="auth-switch" style={{ marginTop: 10 }}>
+            <button type="button" onClick={onBack} disabled={loading}>
+              ← 先不登录，直接进入本地工作区
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

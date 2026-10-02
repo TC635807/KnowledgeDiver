@@ -14,8 +14,9 @@ from typing import AsyncIterator, Optional
 
 from openai import AsyncOpenAI
 
-from backend.config import AI_API_URL, AI_API_KEY, AGENT_MODEL, AGENT_REASONING_EFFORT
+from backend.config import AGENT_REASONING_EFFORT
 from backend.ai.openai_provider import normalize_api_base_url
+from backend.services.ai_settings import effective_settings
 from .schemas import ToolCall
 
 logger = logging.getLogger(__name__)
@@ -67,11 +68,15 @@ class ToolDecision:
 
 class AgentLLM:
     def __init__(self):
+        # 每次构造都读一次生效配置：前端「API 配置」保存后无需重启后端
+        settings = effective_settings()
         self._client = AsyncOpenAI(
-            api_key=AI_API_KEY, base_url=normalize_api_base_url(AI_API_URL),
+            api_key=settings["api_key"],
+            base_url=normalize_api_base_url(settings["api_url"]),
             timeout=LLM_CALL_TIMEOUT, max_retries=1,
         )
-        self._model = AGENT_MODEL
+        # 卡片生成与 Agent 统一使用同一个模型
+        self._model = settings["model"]
 
     async def decide_stream(
         self, messages: list[dict], tools: list[dict], max_tokens: int | None = None,

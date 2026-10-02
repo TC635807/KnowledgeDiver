@@ -1,6 +1,7 @@
 import type { Session, SessionCreate, SessionUpdate } from '../types/session'
 import type { Card } from '../types/card'
-import { authFetchWithToken, getToken } from './auth'
+import { authFetchWithToken } from './auth'
+import { getLocalToken } from './localAccount'
 
 export async function listSessions(): Promise<Session[]> {
   const sessions = await authFetchWithToken<Session[]>('/api/sessions')
@@ -67,7 +68,7 @@ export async function moveCardsToSession(
 }
 
 export async function downloadSession(sessionId: string, sessionName: string): Promise<void> {
-  const token = getToken()
+  const token = getLocalToken()
   if (!token) throw new Error('未认证')
 
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/download`, {
@@ -89,7 +90,7 @@ export async function downloadSession(sessionId: string, sessionName: string): P
 }
 
 export async function uploadSession(file: File): Promise<{ status: string; session: Session; card_count: number }> {
-  const token = getToken()
+  const token = getLocalToken()
   if (!token) throw new Error('未认证')
 
   const formData = new FormData()

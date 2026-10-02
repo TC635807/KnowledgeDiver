@@ -1,4 +1,4 @@
-import { getToken } from './auth'
+import { getLocalToken } from './localAccount'
 
 interface UploadResult {
   task_id: string
@@ -9,7 +9,7 @@ export async function uploadDocument(
   file: File,
   sessionId: string
 ): Promise<UploadResult> {
-  const token = getToken()
+  const token = getLocalToken()
   if (!token) {
     throw new Error('未认证')
   }

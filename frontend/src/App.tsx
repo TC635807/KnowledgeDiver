@@ -28,6 +28,8 @@ import { StreamingOutput } from './components/StreamingOutput'
 import HubPage from './components/HubPage'
 import UserMenu from './components/UserMenu'
 import { TutorialPopover } from './components/TutorialPopover'
+import ToastHost from './components/ToastHost'
+import { showToast } from './utils/toast'
 import { importFromHub as importFromHubApi } from './api/hub'
 import { AuthPage } from './components/AuthPage'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -41,10 +43,47 @@ import { useLayoutState } from './hooks/useLayoutState'
 import type { TaskType } from './types/pipeline'
 import './components/BottomNavBar.css'
 
+// ────────────────────────────── 本地身份启动态 ──────────────────────────────
+
+/**
+ * P0：本地身份就绪前 / 失败时的界面。
+ * 失败必须显式呈现（不许再出现"静默空工作区"，见 05-实施契约 §3.2）。
+ */
+const LocalBootstrapScreen: React.FC<{ error: string | null; onRetry: () => void }> = ({ error, onRetry }) => (
+  <div style={{
+    height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    gap: 12, padding: 24, textAlign: 'center',
+    background: 'var(--bg, #030712)', color: 'var(--text-secondary, #9ca3af)',
+  }}>
+    {error ? (
+      <>
+        <div style={{ fontSize: 32 }}>⚠️</div>
+        <div style={{ fontSize: 16, color: 'var(--text, #e5e7eb)' }}>本地工作区启动失败</div>
+        <div data-testid="local-bootstrap-error" style={{ maxWidth: 520, lineHeight: 1.6 }}>{error}</div>
+        <button onClick={onRetry} style={{
+          marginTop: 4, padding: '8px 20px', borderRadius: 8, border: '1px solid rgba(139,92,246,0.5)',
+          background: 'rgba(139,92,246,0.15)', color: 'var(--accent, #a78bfa)', cursor: 'pointer', fontSize: 13,
+        }}>重试</button>
+        <div style={{ fontSize: 12, opacity: 0.7, maxWidth: 520, lineHeight: 1.6 }}>
+          请确认客户端后端已启动（默认 http://127.0.0.1:8000），且未通过 LOCAL_ACCOUNT=0 关闭内置本地账号。
+        </div>
+      </>
+    ) : (
+      <>
+        <div style={{ fontSize: 28 }}>🧠</div>
+        <div>正在准备本地工作区…</div>
+      </>
+    )}
+  </div>
+)
+
 // ────────────────────────────── AppContent ──────────────────────────────
 
 const AppContent: React.FC = () => {
-  const { user, loading: authLoading, isAuthenticated, logout, refreshUser } = useAuth()
+  const {
+    user, localReady, localError, localUsername, serverStatus,
+    logout, refreshUser, retryLocalSession, notifyServerStatus,
+  } = useAuth()
   const orientation = useDeviceOrientation()
   const {
     workspaceMode, forumPage, profileUsername,
@@ -192,14 +231,15 @@ const AppContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── auth init ──
+  // ── identity init ──
+  // P0：本地身份就绪即加载数据；云端是否登录与本地工作区无关
   useEffect(() => {
-    if (isAuthenticated) {
+    if (localReady) {
       sessionMgr.loadSessions()
       cardMgr.loadCards()
       taskMgr.restoreRunningTasks()
     }
-  }, [isAuthenticated])
+  }, [localReady])
 
   // ── shared session URL detection ──
   useEffect(() => {
@@ -227,12 +267,13 @@ const AppContent: React.FC = () => {
       try {
         const result = await importFromHubApi(creatorUsername, sessionName)
         await sessionMgr.loadSessions()
-        sessionMgr.setSelectedSessionId(result.session_id)
+        if (result.session_id) sessionMgr.setSelectedSessionId(result.session_id)
         goWorkspace()
         goMobilePage('cards')
+        showToast('已导入到本地工作区', 'ok')
       } catch (err) {
         console.error('Failed to import from hub:', err)
-        alert('导入失败，请重试')
+        showToast('导入失败：' + (err instanceof Error ? err.message : '未知错误'), 'err')
       }
     },
     [sessionMgr.loadSessions]
@@ -292,20 +333,20 @@ const AppContent: React.FC = () => {
     if (url?.trim()) importFromShareUrl(url.trim())
   }, [importFromShareUrl])
 
-  // ── auth states ──
-  if (authLoading) {
-    return (
-      <div style={{
-        height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'var(--bg, #030712)', color: 'var(--text-secondary, #9ca3af)'
-      }}>
-        加载中...
-      </div>
-    )
+  // ── identity states ──
+  // P0：本地内置账号就绪 = 直接进工作区，**没有登录硬闸门**（05-实施契约 §3.4）
+  if (!localReady) {
+    return <LocalBootstrapScreen error={localError} onRetry={() => { void retryLocalSession() }} />
   }
 
-  if (!isAuthenticated) {
-    return <AuthPage />
+  // 云端登录/注册：AuthPage 降级为可选页面，登录的是服务器账号（论坛用）
+  if (location.pathname === '/login') {
+    return (
+      <AuthPage
+        onDone={() => navigate('/workspace/cards')}
+        onBack={() => navigate('/workspace/cards')}
+      />
+    )
   }
 
   if (location.pathname === '/' && !location.search.includes('share=')) {
@@ -388,19 +429,27 @@ const AppContent: React.FC = () => {
             <button className={`workspace-toggle__btn${workspaceMode === 'forum' ? ' workspace-toggle__btn--active' : ''}`} onClick={goForum}>论坛</button>
           </div>
           <div className="spacer" />
-          <UserMenu username={user?.username || ''} avatarUrl={user?.avatar_url} onLogout={logout} onGoProfile={handleGoProfile} />
+          <UserMenu
+            username={user?.username || localUsername}
+            avatarUrl={user?.avatar_url}
+            serverUsername={user?.username ?? null}
+            serverStatus={serverStatus}
+            onLogout={logout}
+            onGoProfile={handleGoProfile}
+            onLogin={() => navigate('/login')}
+          />
         </header>
 
         <Routes>
           <Route path="/forum/profile/:username" element={
             profileUsername ? (
-              <ProfilePage username={profileUsername} currentUser={user ?? null} onBack={goForum} onImport={handleImportFromHub} onViewSession={handleViewHubSession} />
+              <ProfilePage username={profileUsername} currentUser={user ?? null} onBack={goForum} onImport={handleImportFromHub} onViewSession={handleViewHubSession} onServerStatus={notifyServerStatus} />
             ) : (
               <Navigate to="/forum" replace />
             )
           } />
           <Route path="/forum" element={
-            <HubPage onImport={handleImportFromHub} user={user ?? null} orientation={orientation} onGoProfile={goProfile} />
+            <HubPage onImport={handleImportFromHub} user={user ?? null} orientation={orientation} onGoProfile={goProfile} serverStatus={serverStatus} onServerStatus={notifyServerStatus} />
           } />
           <Route path="/workspace/*" element={
             <>
@@ -547,19 +596,27 @@ const AppContent: React.FC = () => {
           <button className={`workspace-toggle__btn${workspaceMode === 'forum' ? ' workspace-toggle__btn--active' : ''}`} onClick={goForum}>论坛</button>
         </div>
         <div style={{ flex: 1 }} />
-        <UserMenu username={user?.username || ''} avatarUrl={user?.avatar_url} onLogout={logout} onGoProfile={handleGoProfile} />
+        <UserMenu
+          username={user?.username || localUsername}
+          avatarUrl={user?.avatar_url}
+          serverUsername={user?.username ?? null}
+          serverStatus={serverStatus}
+          onLogout={logout}
+          onGoProfile={handleGoProfile}
+          onLogin={() => navigate('/login')}
+        />
       </header>
 
       <Routes>
         <Route path="/forum/profile/:username" element={
           profileUsername ? (
-            <ProfilePage username={profileUsername} currentUser={user ?? null} onBack={goForum} onImport={handleImportFromHub} onViewSession={handleViewHubSession} />
+            <ProfilePage username={profileUsername} currentUser={user ?? null} onBack={goForum} onImport={handleImportFromHub} onViewSession={handleViewHubSession} onServerStatus={notifyServerStatus} />
           ) : (
             <Navigate to="/forum" replace />
           )
         } />
         <Route path="/forum" element={
-          <HubPage onImport={handleImportFromHub} user={user ?? null} orientation={orientation} onGoProfile={goProfile} />
+          <HubPage onImport={handleImportFromHub} user={user ?? null} orientation={orientation} onGoProfile={goProfile} serverStatus={serverStatus} onServerStatus={notifyServerStatus} />
         } />
         <Route path="/workspace/*" element={
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -827,12 +884,13 @@ const AppContent: React.FC = () => {
 // ────────────────────────────── App Wrappers ──────────────────────────────
 
 const ThemedApp: React.FC = () => {
-  const { user, loading: authLoading } = useAuth()
-  if (authLoading) return null
-  const storageKey = user ? `theme:${user.username}` : 'theme'
+  const { user, localUsername } = useAuth()
+  // 本地身份是默认身份；云端登录后主题按账号名再分一层
+  const storageKey = user ? `theme:${user.username}` : `theme:${localUsername}`
   return (
     <ThemeProvider storageKey={storageKey}>
       <AppContent />
+      <ToastHost />
     </ThemeProvider>
   )
 }

@@ -55,8 +55,10 @@ cards/
 Hub/
 outputs/
 data/*.db*
+data/.jwt_secret
 data/avatars/
 data/users.json
+# 前端「API 配置」写的是 .env（见上方 !.env.example / .env 规则），不新增配置文件
 backend/share/tokens.json
 
 # ── 浏览器与抓取缓存 ────────────────────────────────────────────────────────
