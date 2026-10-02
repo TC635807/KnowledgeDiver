@@ -208,6 +208,10 @@ if KD_SERVER_URL in ("/", "http:/", "https:/"):
 # 反向代理超时（秒）：普通身份/论坛请求用 READ；上传下载单独放宽
 KD_REMOTE_CONNECT_TIMEOUT: float = float(os.getenv("KD_REMOTE_CONNECT_TIMEOUT", "3"))
 KD_REMOTE_READ_TIMEOUT: float = float(os.getenv("KD_REMOTE_READ_TIMEOUT", "5"))
+# 出站代理：**默认不用**系统代理环境变量（见 proxy.py 的 trust_env=False 说明）。
+# 若你的网络确实需要代理才能访问云端，在这里显式指定，例如
+# KD_SERVER_PROXY=socks5://127.0.0.1:7897（用 socks5 时必须 pip install httpx[socks]）
+KD_SERVER_PROXY: str = os.getenv("KD_SERVER_PROXY", "").strip()
 
 # 内置本地账号（v3）：开机即为它签一个本地 JWT，本地工作区始终有身份，
 # 因此不需要 HTTPBearer(auto_error=False)，也不需要「无头即游客」放行分支。

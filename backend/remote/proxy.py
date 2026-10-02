@@ -24,6 +24,7 @@ from starlette.background import BackgroundTask
 from backend.config import (
     KD_REMOTE_CONNECT_TIMEOUT,
     KD_REMOTE_READ_TIMEOUT,
+    KD_SERVER_PROXY,
     KD_SERVER_URL,
 )
 
@@ -138,11 +139,18 @@ class RemoteProxy:
                 write=TRANSFER_READ_TIMEOUT if transfer else self.read_timeout,
                 pool=5.0,
             )
+            # trust_env=False 是**必需**的：否则 httpx 会读取 shell 里的
+            # ALL_PROXY / HTTPS_PROXY 等变量。若用户设的是 socks5 而环境里没有
+            # socksio，httpx 会抛 ImportError（不是 HTTPError），表现为
+            # 「服务器内部错误」500 —— 这正是实测踩到的坑。
+            # 云端域名通常可直连；确实需要代理时用 KD_SERVER_PROXY 显式指定。
             client = httpx.AsyncClient(
                 base_url=self.base_url or "http://localhost",
                 follow_redirects=False,
                 timeout=timeout,
                 transport=self._transport,
+                trust_env=False,
+                proxy=(KD_SERVER_PROXY or None),
             )
             self._clients[transfer] = client
         return client
@@ -158,7 +166,14 @@ class RemoteProxy:
         if not self.enabled:
             raise RuntimeError("KD_SERVER_URL 未配置")
         client = self._client(False)
-        resp = await client.get(self.base_url + path, follow_redirects=True)
+        try:
+            resp = await client.get(self.base_url + path, follow_redirects=True)
+        except httpx.HTTPError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 统一成 HTTPError，交给调用方做 502 降级
+            raise httpx.ConnectError(
+                "无法发起出站请求（" + type(exc).__name__ + "）：" + str(exc)[:160]
+            ) from exc
         try:
             data: Any = resp.json()
         except ValueError:
@@ -223,6 +238,21 @@ class RemoteProxy:
                 status_code=502,
                 content={
                     "detail": "远程服务器不可达，请检查网络或稍后重试",
+                    "status_code": 502,
+                    "remote": self.base_url,
+                    "error": type(exc).__name__,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 出站任何异常都不能变成不透明的 500
+            # 例如 httpx 缺少 socksio 时的 ImportError：既不是 HTTPError，
+            # 又不能泄漏成「服务器内部错误」，必须给出可操作的中文提示。
+            logger.exception("[RemoteProxy] 出站请求异常: %s %s", request.method, target)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": "本机无法发起对服务器的请求（"
+                    + type(exc).__name__
+                    + "）：请检查系统代理设置（ALL_PROXY / HTTPS_PROXY）或改用 KD_SERVER_PROXY",
                     "status_code": 502,
                     "remote": self.base_url,
                     "error": type(exc).__name__,

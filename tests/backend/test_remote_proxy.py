@@ -389,3 +389,48 @@ def test_real_app_keeps_local_workspace_local(fastapi_app):
 def test_real_app_rejects_upgrade(fastapi_app):
     resp = TestClient(fastapi_app).post("/api/auth/upgrade")
     assert resp.status_code == 404
+
+
+# ── 出站代理环境隔离（实测回归：ALL_PROXY 无 socksio → 曾表现为 500）─────────
+
+class _Boom(httpx.AsyncBaseTransport):
+    """模拟 httpx 在缺少 socksio 时抛出的 ImportError（不是 HTTPError）。"""
+
+    def __init__(self, exc: BaseException):
+        self._exc = exc
+
+    async def handle_async_request(self, request):
+        raise self._exc
+
+
+def test_outbound_client_ignores_system_proxy_env(monkeypatch):
+    """出站客户端必须 trust_env=False，否则会被 shell 的 ALL_PROXY 劫持。"""
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:7907")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7907")
+    proxy = RemoteProxy(REMOTE, transport=httpx.MockTransport(lambda r: reply()))
+    assert proxy._client(False).trust_env is False
+    assert proxy._client(True).trust_env is False
+
+
+def test_socks_import_error_maps_to_502_not_500(remote):
+    """ImportError（缺 socksio）必须降级为 502 并给出可操作提示，不能是 500。"""
+    boom = RemoteProxy(REMOTE, transport=_Boom(
+        ImportError("Using SOCKS proxy, but the 'socksio' package is not installed.")
+    ))
+    app = FastAPI()
+    app.include_router(boom.router)
+    resp = TestClient(app, raise_server_exceptions=False).get("/api/hub")
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["error"] == "ImportError"
+    assert "代理" in body["detail"]
+
+
+def test_fetch_json_converts_unknown_error_to_httperror():
+    """fetch_json 的未知异常要统一成 httpx.HTTPError，供调用方做 502 降级。"""
+    boom = RemoteProxy(REMOTE, transport=_Boom(RuntimeError("boom")))
+    import asyncio
+
+    with pytest.raises(httpx.HTTPError):
+        asyncio.run(boom.fetch_json("/api/hub/x/y"))
+
