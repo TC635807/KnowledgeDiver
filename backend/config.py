@@ -27,9 +27,9 @@ load_dotenv()
 
 # AI 代码默认值（具名常量：既作为 os.getenv 的兜底，也作为前端「API 配置」
 # 里「恢复默认」的回落目标，保证默认值只有一个来源）
-AI_API_URL_DEFAULT: str = "https://api.deepseek.com"
+AI_API_URL_DEFAULT: str = "https://ollama.com/v1"
 AI_API_KEY_DEFAULT: str = ""
-AI_MODEL_DEFAULT: str = "deepseek-v4-flash"
+AI_MODEL_DEFAULT: str = "deepseek-v4.1-flash"
 
 AI_API_URL: str = os.getenv("AI_API_URL", AI_API_URL_DEFAULT)
 AI_API_KEY: str = os.getenv("AI_API_KEY", AI_API_KEY_DEFAULT)

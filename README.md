@@ -92,7 +92,7 @@ HF_ENDPOINT=https://hf-mirror.com .venv/bin/huggingface-cli download \
 > 需要 GPU 版时设 `TORCH_CPU_ONLY=0`；想换镜像设 `TORCH_CPU_INDEX=...`。
 > 若已误装 CUDA 版，可 `.venv/bin/pip uninstall -y torch` 后按上面重装。
 
-> **必填项**：`JWT_SECRET` 为空时 `backend/config.py` 会直接 `raise RuntimeError`，后端无法启动，因此这是唯一强制项；要生成卡片或使用 Agent，还需填写 `AI_API_KEY`。搜索默认免费，无需任何 key。
+> **必填项**：只有 `AI_API_KEY`（要生成卡片或使用 Agent 时）。`JWT_SECRET` 缺失时会自动生成并持久化到 `data/.jwt_secret`（本机文件、已 gitignore），不会阻止启动——但建议在 `.env` 里固定它。搜索默认免费，无需任何 key。
 
 ## 配置
 
@@ -110,9 +110,9 @@ HF_ENDPOINT=https://hf-mirror.com .venv/bin/huggingface-cli download \
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AI_API_URL` | `https://api.deepseek.com` | OpenAI 兼容 API 地址；可填完整 `/v1/responses` 端点，代码自动规范化 |
+| `AI_API_URL` | `https://ollama.com/v1` | OpenAI 兼容 API 地址；可填完整 `/v1/responses` 端点，代码自动规范化 |
 | `AI_API_KEY` | 空 | API 密钥 |
-| `AI_MODEL` | `deepseek-v4-flash` | 卡片生成与 Agent **共用**的模型 |
+| `AI_MODEL` | `deepseek-v4.1-flash` | 卡片生成与 Agent **共用**的模型（只有一个模型） |
 | `AI_CONCURRENCY` | `2` | LLM 并发上限 |
 | `DEFAULT_SEARCH_PROVIDER` | `free` | 搜索源：`free` / `bocha` / `baidu` / `exa` |
 | `FREE_SEARCH_ENGINES` | `bing,anysearch,exa-mcp,ddg,searxng` | 免费引擎优先级（左→右，任一成功即止） |
