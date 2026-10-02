@@ -98,3 +98,56 @@ def test_ai_test_endpoint_never_returns_500_on_construction_error(monkeypatch):
     body = resp.json()
     assert body["ok"] is False
     assert "socksio" in body["message"]
+
+# ── 同源问题的回归护栏：构造/加载异常不得变成不透明的 500 ──────────────────────
+
+def test_agent_llm_gets_isolated_http_client(monkeypatch):
+    """Agent 的 LLM 客户端也必须带 http_client（否则会被 ALL_PROXY 劫持）。"""
+    seen = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr("backend.agent.provider.AsyncOpenAI", FakeOpenAI)
+    monkeypatch.setattr(
+        "backend.agent.provider.effective_settings",
+        lambda: {"api_key": "k", "api_url": "https://ollama.com/v1", "model": "m"},
+    )
+
+    from backend.agent.provider import AgentLLM
+
+    AgentLLM()
+    assert "http_client" in seen
+    assert seen["http_client"].trust_env is False
+
+
+def test_gap_analysis_returns_503_when_embedder_unavailable(monkeypatch, tmp_path):
+    """嵌入模型加载失败时给 503 + 可读原因，而不是 500。"""
+    from types import SimpleNamespace
+
+    class FakeCardStore:
+        def list_cards(self):
+            return [SimpleNamespace(id="c1", title="t", content="c")]
+
+    class FakePipelineAPI:
+        def __init__(self, **kwargs):
+            self.card_store = FakeCardStore()
+
+    async def boom(self, texts):
+        raise OSError("模型未下载")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("backend.pipeline.api.PipelineAPI", FakePipelineAPI)
+    monkeypatch.setattr("backend.ai.embedder.Embedder.encode", boom)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        username="u", hashed_password="x", created_at=datetime.utcnow()
+    )
+    try:
+        resp = TestClient(app, raise_server_exceptions=False).get("/api/pipeline/gap-analysis")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503, resp.text
+    assert "嵌入模型不可用" in resp.json()["detail"]
+

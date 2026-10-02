@@ -229,9 +229,17 @@ async def gap_analysis(
         }
 
     # 快通道：在 async 上下文中直接 await 嵌入模型，绕过 _run_async 桥接
-    embedder = Embedder.get()
-    texts = [f"{c.title}\n{c.content}" for c in cards]
-    embeddings = await embedder.encode(texts)
+    # 嵌入模型加载失败（未下载 / 网络不通）必须给可读错误，而不是不透明的 500
+    try:
+        embedder = Embedder.get()
+        texts = [f"{c.title}\n{c.content}" for c in cards]
+        embeddings = await embedder.encode(texts)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[GapAnalysis] 嵌入模型不可用: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="嵌入模型不可用（可能未下载或加载失败）：" + str(exc)[:200],
+        ) from exc
     emb_map = {cards[i].id: embeddings[i] for i in range(len(cards))}
 
     all_scores = score_all_cards(cards, emb_map, raw_store)

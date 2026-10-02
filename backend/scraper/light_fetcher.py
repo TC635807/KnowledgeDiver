@@ -50,7 +50,16 @@ async def fetch_light(url: str, timeout: int = 8) -> Optional[dict]:
         "Upgrade-Insecure-Requests": "1",
     }
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, http2=True) as client:
+        # 与 search/free.py、search/exa.py 一致：不读系统代理环境变量
+        # （否则 ALL_PROXY=socks5 而缺 socksio 时构造即抛异常，这里会被吞掉，
+        #  表现为"轻量抓取永远返回 None"的静默故障），需要代理时用 PROXY_PORT。
+        from backend.scraper.proxy_config import get_proxy_url
+
+        client_kwargs: dict = {"timeout": timeout, "follow_redirects": True, "http2": True, "trust_env": False}
+        _proxy = get_proxy_url()
+        if _proxy:
+            client_kwargs["proxy"] = _proxy
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
                 return None

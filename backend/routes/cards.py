@@ -99,7 +99,14 @@ async def reindex_cards(
     """为当前会话的所有卡片重建向量索引。"""
     _logger.info("重建索引请求 session=%s user=%s", session_id, current_user.username)
     store = SqliteCardStore(username=current_user.username, session_id=session_id)
-    count = store.reindex_all()
+    try:
+        count = store.reindex_all()
+    except Exception as exc:  # noqa: BLE001 - 嵌入模型不可用时给可读错误，别抛 500
+        _logger.warning("重建索引失败: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="嵌入模型不可用（可能未下载或加载失败）：" + str(exc)[:200],
+        ) from exc
     _logger.info("重建索引完成: %d 张卡片", count)
     return {"indexed": count}
 

@@ -70,10 +70,16 @@ class AgentLLM:
     def __init__(self):
         # 每次构造都读一次生效配置：前端「API 配置」保存后无需重启后端
         settings = effective_settings()
+        # http_client 必须显式传入：否则 httpx 会读 ALL_PROXY/HTTPS_PROXY，
+        # 当其中是 socks5 而环境缺 socksio 时会在**构造阶段**抛 ImportError，
+        # 让整个 Agent 直接不可用（与设置页「测试连接」曾出现的 500 同一根因）。
+        from backend.ai.openai_provider import build_ai_http_client
+
         self._client = AsyncOpenAI(
             api_key=settings["api_key"],
             base_url=normalize_api_base_url(settings["api_url"]),
             timeout=LLM_CALL_TIMEOUT, max_retries=1,
+            http_client=build_ai_http_client(),
         )
         # 卡片生成与 Agent 统一使用同一个模型
         self._model = settings["model"]
