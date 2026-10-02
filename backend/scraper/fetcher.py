@@ -17,7 +17,9 @@ Hybrid web fetcher: trafilatura (fast, primary) → crawl4ai Playwright (slow, f
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 from typing import Any, List, Optional
 
 from pydantic import BaseModel
@@ -38,6 +40,46 @@ _crawl4ai_disabled = False
 # 共享浏览器一次只能跑少量并发页面，太多会导致 Chromium OOM/崩溃 → EPIPE
 _crawler_sem = asyncio.Semaphore(5)
 
+# 抓取阶梯超时的上下界（模块级便于测试覆盖）
+_CRAWL_MIN_TIMEOUT = 15.0
+_CRAWL_MAX_TIMEOUT = 30.0
+# 页面超时后的"收敛宽限期"：超时后必须等 arun 真正结束再释放 _crawler_sem。
+# 旧实现 add_done_callback 后立即 return，后台存活页面不受并发上限约束 ——
+# 一批 URL 同时超时时 Chromium 页面/内存线性增长，浏览器随即无响应
+# （实测：同一 URL 早先 crawl4ai OK，之后全部「所有抓取方法均失败」）。
+_CRAWL_TIMEOUT_GRACE = 5.0
+
+# 崩溃熔断：连续 N 次中途崩溃后临时禁用浏览器回退，避免"崩溃 → 重启新浏览器"循环
+# 把 Chromium 进程成倍堆积（旧 _reset_crawler 只丢引用、不关进程）。
+_CRAWL4AI_CRASH_LIMIT = 3
+_CRAWL4AI_COOLDOWN = 300.0
+_crawl4ai_crashes = 0
+_crawl4ai_disabled_until = 0.0
+
+# trafilatura 兜底的下载超时与体积上限（其默认 30s / 20MB，会把线程与内存一起拖住）
+_TRAFILATURA_TIMEOUT = 8
+_TRAFILATURA_MAX_BYTES = 5 * 1024 * 1024
+_traf_config_applied = False
+
+
+def _apply_trafilatura_limits() -> None:
+    """把 trafilatura 的下载超时/体积上限收到本项目尺度。
+
+    外层 asyncio.wait_for 只能停止**等待**，to_thread 里的 urllib3 仍会跑满 30s
+    （实测日志 connect/read timeout=30），并最多把 20MB 内容拉进内存。
+    """
+    global _traf_config_applied
+    if _traf_config_applied:
+        return
+    try:
+        from trafilatura.settings import DEFAULT_CONFIG
+
+        DEFAULT_CONFIG.set("DEFAULT", "DOWNLOAD_TIMEOUT", str(_TRAFILATURA_TIMEOUT))
+        DEFAULT_CONFIG.set("DEFAULT", "MAX_FILE_SIZE", str(_TRAFILATURA_MAX_BYTES))
+        _traf_config_applied = True
+    except Exception as e:  # noqa: BLE001 - 限额配置失败不影响抓取
+        logger.debug("[Fetcher] 设置 trafilatura 限额失败: %s", e)
+
 # trafilatura 单层失败的域名缓存：反爬站（如 CSDN 521）上 trafilatura 必失败，
 # TTL 内跳过它直接走 light/crawl4ai，省掉每次 5-8s 的无谓试错。
 _traf_fail_domains: dict[str, float] = {}
@@ -57,6 +99,8 @@ async def _get_crawler():
     """
     global _crawler, _crawl4ai_disabled
     if _crawl4ai_disabled:
+        return None
+    if time.time() < _crawl4ai_disabled_until:
         return None
     if _crawler is not None:
         return _crawler
@@ -99,10 +143,28 @@ async def close_crawler():
         _crawler = None
 
 
-def _reset_crawler():
-    """Chromium 崩溃后重置单例，下次请求自动重建。"""
-    global _crawler
-    _crawler = None
+async def _reset_crawler() -> None:
+    """Chromium 崩溃后重置单例：**必须先真正关掉旧浏览器**再重建。
+
+    旧实现只把 _crawler 置 None：Playwright/Chromium 子进程不会被终止，
+    下一次抓取又启动一个新浏览器 —— 崩溃反复发生时 Chromium 进程成倍累积
+    （每个几百 MB），最终把应用/机器内存打满。连续崩溃超阈值则临时熔断。
+    """
+    global _crawler, _crawl4ai_crashes, _crawl4ai_disabled_until
+    crawler, _crawler = _crawler, None
+    if crawler is not None:
+        try:
+            await crawler.__aexit__(None, None, None)
+        except Exception as e:  # noqa: BLE001 - 浏览器已崩，关闭失败不影响重置
+            logger.warning("[Fetcher] 重置时关闭浏览器出错: %s", e)
+    _crawl4ai_crashes += 1
+    if _crawl4ai_crashes >= _CRAWL4AI_CRASH_LIMIT:
+        _crawl4ai_disabled_until = time.time() + _CRAWL4AI_COOLDOWN
+        logger.warning(
+            "[Fetcher] crawl4ai 连续崩溃 %d 次，临时禁用浏览器回退 %d 秒（避免 Chromium 进程累积）",
+            _crawl4ai_crashes, int(_CRAWL4AI_COOLDOWN),
+        )
+        _crawl4ai_crashes = 0
     logger.info("[Fetcher] crawl4ai browser reset (crash or close detected)")
 
 
@@ -275,6 +337,8 @@ class WebFetcher:
         """
         import trafilatura
 
+        _apply_trafilatura_limits()
+
         # ponytail: 缩到 5s（trafilatura 快站 ~1s 就返回，省 3s 留给 BS4 + crawl4ai）
         fast_timeout = min(max(self.timeout, 3), 5)
 
@@ -338,6 +402,7 @@ class WebFetcher:
 
     async def _try_crawl4ai(self, url: str) -> ScrapedContent | None:
         """用 crawl4ai Playwright 抓取 JS 渲染页面（共享浏览器实例）。"""
+        global _crawl4ai_crashes
         c = await _get_crawler()
         if c is None:
             return None
@@ -347,7 +412,7 @@ class WebFetcher:
         except ImportError:
             return None
 
-        slow_timeout = min(max(self.timeout * 2, 15), 30)
+        slow_timeout = min(max(self.timeout * 2, _CRAWL_MIN_TIMEOUT), _CRAWL_MAX_TIMEOUT)
         page_timeout_ms = min(int(slow_timeout * 1000 * 0.8), 20000)
 
         async with _crawler_sem:
@@ -366,15 +431,26 @@ class WebFetcher:
                     try:
                         r = await asyncio.wait_for(asyncio.shield(arun_task), timeout=slow_timeout)
                     except asyncio.TimeoutError:
-                        # 超时不取消 arun：取消会让 playwright 内部 future 异常泄漏
-                        # （TargetClosedError: future exception was never retrieved）。
-                        # 让它自然结束，done_callback 消费结果/异常防止泄漏。
+                        # 不立刻取消 arun（取消会让 playwright 内部 future 异常泄漏），
+                        # 但**必须等它真正收敛后再释放 _crawler_sem**：只挂 done_callback
+                        # 就返回，后台页面不受并发上限约束，一批 URL 同时超时时页面/内存
+                        # 会线性增长，浏览器随即无响应。宽限期内没结束则取消并 await 收尾。
                         arun_task.add_done_callback(
                             lambda t: t.exception() if not t.cancelled() else None
                         )
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(arun_task), timeout=_CRAWL_TIMEOUT_GRACE
+                            )
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            arun_task.cancel()
+                            with contextlib.suppress(BaseException):
+                                await arun_task
+                        except Exception:
+                            pass
                         return None
                 except (BrokenPipeError, ConnectionResetError):
-                    _reset_crawler()
+                    await _reset_crawler()
                     return None
                 except Exception as e:
                     msg = str(e)
@@ -383,7 +459,7 @@ class WebFetcher:
                         "Protocol error", "Browser has been closed",
                         "has been closed", "Target closed",
                     )):
-                        _reset_crawler()
+                        await _reset_crawler()
                     logger.debug("[Fetcher] crawl4ai error: %s - %s", msg[:80], url[:60])
                     return None
                 if r and r.success:
@@ -397,6 +473,7 @@ class WebFetcher:
         if not r or not r.success:
             return None
 
+        _crawl4ai_crashes = 0  # 成功一次即清零，避免偶发崩溃累积成熔断
         text = ""
         if r.markdown:
             md = r.markdown
