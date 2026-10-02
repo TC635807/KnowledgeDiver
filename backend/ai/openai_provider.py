@@ -11,11 +11,30 @@ import logging
 import re
 from typing import AsyncIterator, Optional, List
 
+import httpx
 from openai import AsyncOpenAI
+
+from backend.config import AI_PROXY_URL
 
 from .provider import AIConfig, AIProvider, TopicCluster, GeneratedCard
 
 logger = logging.getLogger(__name__)
+
+
+def build_ai_http_client() -> httpx.AsyncClient:
+    """为 AI 调用构造专用 httpx 客户端。
+
+    **必须 trust_env=False**：否则 httpx 会读取 shell 里的 ALL_PROXY / HTTPS_PROXY，
+    若其中是 socks5 而环境没装 socksio，httpx 会在**构造阶段**直接抛 ImportError
+    （不是 HTTPError，也不是网络错误）——用户看到的是「服务器内部错误」，
+    而且会同时打挂所有 AI 功能。需要代理时用 AI_PROXY_URL / PROXY_PORT 显式指定。
+    """
+    # 延迟导入：backend.scraper 包初始化较重，避免模块级循环依赖
+    from backend.scraper.proxy_config import get_proxy_url
+
+    proxy = AI_PROXY_URL or get_proxy_url() or None
+    # timeout=None：超时统一交给 OpenAI SDK 的 timeout 参数控制
+    return httpx.AsyncClient(proxy=proxy, trust_env=False, timeout=None)
 
 _UNTRUSTED_MODULE = None
 
@@ -137,6 +156,7 @@ class OpenAIProvider(AIProvider):
             base_url=self._normalize_url(self.config.api_url),
             timeout=self.timeout,
             max_retries=0,
+            http_client=build_ai_http_client(),
         )
 
     @staticmethod

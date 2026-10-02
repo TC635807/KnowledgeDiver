@@ -25,7 +25,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from backend.ai.openai_provider import normalize_api_base_url
+from backend.ai.openai_provider import build_ai_http_client, normalize_api_base_url
 from backend.config import (
     KD_REMOTE_CONNECT_TIMEOUT,
     KD_REMOTE_READ_TIMEOUT,
@@ -50,6 +50,17 @@ from backend.services.ai_settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+def _readable_error(exc: Exception) -> str:
+    """把异常转成可操作的中文提示（尤其是代理环境导致的构造失败）。"""
+    name = exc.__class__.__name__
+    text = str(exc).strip().replace("\n", " ")
+    if "socksio" in text or "SOCKS proxy" in text:
+        return ("检测到系统代理为 socks5，但环境缺少 socksio 依赖："
+                "请 pip install socksio，或在 .env 显式设置 AI_PROXY_URL / PROXY_PORT 后重试")
+    if not text:
+        return name
+    return (name + "：" + text)[:_MAX_ERROR_CHARS]
 
 router = APIRouter()
 
@@ -163,13 +174,18 @@ async def post_ai_settings_test(
         return {"ok": False, "message": "API Key 为空，请先填写"}
 
     started = time.perf_counter()
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url=normalize_api_base_url(api_url),
-        timeout=_TEST_TIMEOUT,
-        max_retries=0,
-    )
+    # 客户端**构造**也必须包在 try 里：构造阶段同样会抛异常
+    # （典型：shell 里有 ALL_PROXY=socks5 而环境缺 socksio → ImportError），
+    # 漏在外面就会变成不透明的 500「服务器内部错误」。
+    client: Optional[AsyncOpenAI] = None
     try:
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=normalize_api_base_url(api_url),
+            timeout=_TEST_TIMEOUT,
+            max_retries=0,
+            http_client=build_ai_http_client(),
+        )
         await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],
@@ -177,14 +193,15 @@ async def post_ai_settings_test(
             stream=False,
         )
     except Exception as e:
-        detail = str(e).strip().replace("\n", " ")[:_MAX_ERROR_CHARS] or e.__class__.__name__
+        detail = _readable_error(e)
         logger.warning("[Settings] AI 连接测试失败: %s", detail)
         return {"ok": False, "message": f"连接失败：{detail}", "model": model}
     finally:
-        try:
-            await client.close()
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     logger.info("[Settings] AI 连接测试成功（%s, %dms）", model, latency_ms)

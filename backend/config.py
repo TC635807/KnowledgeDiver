@@ -36,6 +36,13 @@ AI_API_KEY: str = os.getenv("AI_API_KEY", AI_API_KEY_DEFAULT)
 AI_MODEL: str = os.getenv("AI_MODEL", AI_MODEL_DEFAULT)
 AI_CONCURRENCY: int = int(os.getenv("AI_CONCURRENCY", "2"))
 AI_PROXY_PORT: int = int(os.getenv("PROXY_PORT", "0"))
+# AI 出站代理。默认**不使用**系统代理环境变量（ALL_PROXY/HTTPS_PROXY）：
+# 若 shell 里设了 socks5 而环境缺 socksio，httpx 会在**客户端构造阶段**就抛 ImportError，
+# 表现为「服务器内部错误」，且会同时打挂所有 AI 功能（生成/Agent/连接测试）。
+# 需要代理时显式配置其一：
+#   AI_PROXY_URL=socks5://127.0.0.1:7897   （优先级最高，socks5 需 pip install socksio）
+#   PROXY_PORT=7897                         （复用全局代理端口，按 http://127.0.0.1:<port> 使用）
+AI_PROXY_URL: str = os.getenv("AI_PROXY_URL", "").strip()
 
 # 卡片生成与 Agent 统一使用 AI_MODEL（不再有独立的 Agent 模型配置）
 # Agent 思考强度（deepseek-v4-flash 支持 low/high/max；思考模式开启时 temperature 不生效）

@@ -4,6 +4,9 @@ uvicorn==0.44.0
 pydantic==2.12.5
 openai==2.14.0
 httpx[http2]==0.28.1
+# socks5 代理支持：shell 里设了 ALL_PROXY=socks5://... 时 httpx 需要它，
+# 否则会在**客户端构造阶段**抛 ImportError（表现为「服务器内部错误」）
+socksio==1.0.0
 httpx-curl-cffi==0.1.5
 curl-cffi>=0.7.0
 requests==2.33.1
