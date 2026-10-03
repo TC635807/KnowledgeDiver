@@ -164,6 +164,6 @@ def test_os_environ_is_synced_so_changes_take_effect_without_restart(env_file):
 def test_mask_key():
     assert ai_settings.mask_key("") == ""
     assert ai_settings.mask_key("short") == "*****"
-    masked = ai_settings.mask_key("sk-e224d6c6c0344f77b3d5d300e6e7216e")
-    assert masked.startswith("sk-e22") and masked.endswith("216e")
-    assert "d6c6c0344f77b3d5d300e6e7" not in masked
+    masked = ai_settings.mask_key("sk-fake1234567890abcdefghijklmnop")
+    assert masked.startswith("sk-fak") and masked.endswith("mnop")
+    assert "e1234567890abcdefghijkl" not in masked
