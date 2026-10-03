@@ -103,7 +103,7 @@ def test_default_provider_is_free():
 
 
 def test_default_engine_priority():
-    assert config_mod.FREE_SEARCH_ENGINES[:3] == ["bing", "anysearch", "exa-mcp"]
+    assert config_mod.FREE_SEARCH_ENGINES[:3] == ["exa-mcp", "anysearch", "bing"]
     assert all(e in free_mod.ENGINE_REGISTRY for e in config_mod.FREE_SEARCH_ENGINES)
 
 
@@ -191,7 +191,8 @@ def test_fallback_chain_stops_at_first_success(monkeypatch):
 
     async def good(client, query, pool):
         calls.append("good")
-        return [Hit("https://ok.example/x", "T", "S")]
+        # 结果必须与查询真正相关，否则链级守门会把它也判为跑题
+        return [Hit("https://ok.example/x", "知识管理入门", "组织内知识的识别与传播。")]
 
     monkeypatch.setitem(free_mod.ENGINE_REGISTRY, "boom", boom)
     monkeypatch.setitem(free_mod.ENGINE_REGISTRY, "empty", empty)
@@ -264,7 +265,7 @@ def test_bing_irrelevant_serp_falls_through(monkeypatch):
         return httpx.Response(200, text=BING_IRRELEVANT_HTML)
 
     async def good(client, query, pool):
-        return [Hit("https://ok.example/z", "T", "S")]
+        return [Hit("https://ok.example/z", "量子计算纠错入门", "量子纠错是量子计算的关键方向。")]
 
     monkeypatch.setitem(free_mod.ENGINE_REGISTRY, "good", good)
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -272,7 +273,10 @@ def test_bing_irrelevant_serp_falls_through(monkeypatch):
     results = _run(client.search("量子计算 纠错", 5))
 
     assert [r.url for r in results] == ["https://ok.example/z"]
-    assert client.attempts[0].engine == "bing" and client.attempts[0].error == "0 results"
+    # Bing 返回了 1 条但与查询无关 -> 判为无效 SERP 并继续回退（不是「0 results」）
+    assert client.attempts[0].engine == "bing"
+    assert client.attempts[0].error == "irrelevant SERP"
+    assert client.attempts[0].count == 1
     _run(http.aclose())
 
 
@@ -333,7 +337,7 @@ def test_free_source_provider_accepts_mixed_return_types(monkeypatch):
 def test_factory_wires_free_and_unknown_provider():
     source = factory.build_search_source("free")
     assert isinstance(source, FreeSourceProvider)
-    assert source.search_client.engines[0] == "bing"
+    assert source.search_client.engines[0] == "exa-mcp"
 
     # 未知取值不抛异常，按 free 处理（避免路由层 500）
     fallback = factory.build_search_source("no-such-provider")
@@ -342,5 +346,5 @@ def test_factory_wires_free_and_unknown_provider():
 
 def test_free_client_requires_no_api_key():
     client = FreeSearchClient()
-    assert client.engines[:3] == ["bing", "anysearch", "exa-mcp"]
+    assert client.engines[:3] == ["exa-mcp", "anysearch", "bing"]
     assert client._anysearch_api_key == config_mod.ANYSEARCH_API_KEY

@@ -34,12 +34,20 @@ class RobotsChecker:
         url = f"https://{domain}/robots.txt"
         try:
             proxy = get_proxy_url()
+            # 同 backend/search/free.py：必须显式传 curl_options，否则 httpx_curl_cffi 会把
+            # NOPROXY 丢掉，libcurl 转而读取环境里的 HTTP_PROXY/ALL_PROXY —— 代理没开时
+            # robots.txt 同样拉不到（异常被吞掉后会被当成「无限制」放行）。
+            from curl_cffi import CurlOpt
+
             client_kwargs = {
                 "timeout": self.default_timeout,
-                "transport": AsyncCurlTransport(impersonate="chrome120", default_headers=True),
+                "transport": AsyncCurlTransport(
+                    impersonate="chrome120",
+                    default_headers=True,
+                    proxy=proxy,
+                    curl_options={CurlOpt.NOPROXY: "" if proxy else "*"},
+                ),
             }
-            if proxy:
-                client_kwargs["proxy"] = proxy
             async with httpx.AsyncClient(**client_kwargs) as client:
                 resp = await client.get(url)
             if resp.status_code == 200:

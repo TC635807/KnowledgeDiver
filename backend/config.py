@@ -92,13 +92,17 @@ DEFAULT_SEARCH_PROVIDER: str = os.getenv("DEFAULT_SEARCH_PROVIDER", "free")
 SEARCH_AUTO_FALLBACK: str = os.getenv("SEARCH_AUTO_FALLBACK", "1")
 
 # ── 免费多引擎搜索（provider="free"，无需 API key）────────────────────────
-# 引擎优先级：从左到右依次尝试，任一引擎返回结果即止；全部失败才返回空。
+# 引擎优先级：从左到右依次尝试；某个引擎报错、返回空、或返回「有结果但明显跑题」都会
+# 继续回退到下一个，直到拿到一批与查询真正相关的结果（判定见 free.looks_relevant）。
 # 可选引擎: bing | anysearch | exa-mcp | ddg | ddg-lite | searxng
-#   国内网络实测: bing ✅ / anysearch ✅ / exa-mcp ✅ / ddg ❌ / searxng ❌（被墙）
-#   海外网络: ddg / searxng 可用，可作为 bing 的补充。按部署网络环境用环境变量调整。
+#   国内网络实测: exa-mcp ✅（Exa 公开 MCP，免 key，单次 20 条，中文长尾质量最好）
+#                 anysearch ✅（免 key，但服务端硬上限 10 条）
+#                 bing ⚠️（对中文多词查询会退化成按第一个词搜索，返回一整页无关结果）
+#                 ddg ❌ / searxng ❌（被墙）
+#   海外网络: ddg / searxng 可用，可作为补充。按部署网络环境用环境变量调整。
 FREE_SEARCH_ENGINES: List[str] = [
     e.strip()
-    for e in os.getenv("FREE_SEARCH_ENGINES", "bing,anysearch,exa-mcp,ddg,searxng").split(",")
+    for e in os.getenv("FREE_SEARCH_ENGINES", "exa-mcp,anysearch,bing,ddg,searxng").split(",")
     if e.strip()
 ]
 FREE_SEARCH_TIMEOUT: int = int(os.getenv("FREE_SEARCH_TIMEOUT", "15"))       # 单请求超时（秒）

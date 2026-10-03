@@ -163,20 +163,60 @@ def query_tokens(query: str) -> List[str]:
     return out
 
 
-def looks_relevant(query: str, hits: List[Hit]) -> bool:
-    """Bing 在「查询无结果」时会返回一张完全无关的缓存 SERP。
+# 相关性守门：结果集与查询的「平均 n-gram 词面重合度」低于 _RELEVANCE_MIN_COVERAGE
+# 即判为无效 SERP。
+#
+# 要抓的是 Bing 的「无结果回退」：Bing 判定查询无结果时会退化成按第一个词搜索，
+# 返回一整页与查询无关的结果（「战术人形（少女前线）」→ 全是「战术」的百科与兵法书；
+# 「坍塌事件 少女前线」→ 全是「坍塌」的词典释义；「人工智能 少女前线2：追放」→
+# 全是「人工」的词条）。
+#
+# 实测（7 组查询 × 3 个引擎；覆盖度 = 每条结果命中的 query n-gram 占比，再对结果取均值）：
+#     Bing 回退结果   0.143 / 0.167 / 0.183 / 0.306    ← 4/4 全部低于门槛
+#     正常结果        0.457 ~ 1.000                    ← 14/14 全部高于门槛
+#   0.35 的门槛在这批数据上零误判。
+#
+# 为什么不用「查询前几个字是否出现」：那会把多主题查询误杀。「人工智能 少女前线2：追放」
+# 这种查询是 pipeline 领域锚定拼出来的，真正相关的是官网与维基的《少女前线2》条目，
+# 未必含「人工智能」；前缀法会把它们整批判为无关，导致搜索直接返回 0 条（实测踩过）。
+# 改用「整条查询的 n-gram 重合度取均值」，既能拦住只命中一个词的跑题 SERP，也不会
+# 误杀「只匹配了查询后半段」的正常结果。
+_RELEVANCE_MIN_COVERAGE = 0.35
 
-    这里用「查询 token 与结果文本是否重叠」识别该情况，判为 0 结果交给下一个引擎。
-    纯符号查询无法判定，不拦截。
-    """
+
+def relevance_coverage(query: str, hits: List[Hit]) -> float:
+    """结果集与查询的平均 n-gram 词面重合度（0~1）。"""
     tokens = query_tokens(query)
     if not tokens:
-        return True
+        return 1.0
+    covs: List[float] = []
     for h in hits:
         hay = f"{h.title} {h.snippet} {h.url}".lower()
-        if any(t.lower() in hay for t in tokens):
-            return True
-    return False
+        if not hay.strip():
+            continue
+        covs.append(sum(1 for t in tokens if t.lower() in hay) / len(tokens))
+    if not covs:
+        return 1.0
+    return sum(covs) / len(covs)
+
+
+def looks_relevant(query: str, hits: List[Hit]) -> bool:
+    """判断一批结果是否真的对应本次查询，作为引擎链的统一守门。
+
+    两个用途：
+      1. 识别 Bing 的「无结果回退」——它会把多词查询退化成按第一个词搜索，返回一页
+         看着像结果、实则与查询无关的 SERP；
+      2. 让回退链真正能走下去：任何引擎只要「返回了结果但整体跑题」就按失败处理、
+         继续回退到下一个引擎。否则链会在第一个非空结果上停住 —— 这正是「Bing 没
+         搜到东西却不再回退到 exa-mcp」的原因。
+
+    纯符号查询、或结果完全没有可判定文本时不拦截（宁可不判，不可误杀）。
+    """
+    if not hits:
+        return False
+    if not query_tokens(query):
+        return True
+    return relevance_coverage(query, hits) >= _RELEVANCE_MIN_COVERAGE
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -380,12 +420,31 @@ class FreeSearchClient(BaseSearchClient):
     async def _get_client(self) -> httpx.AsyncClient:
         if self._http_client is not None:
             return self._http_client
+        # 延迟导入：backend.scraper.__init__ -> backend.pipeline -> factory -> backend.search
+        # 会构成循环导入（bocha.py 采用同样的延迟导入写法）
+        from backend.scraper.proxy_config import get_proxy_url
+
+        proxy = get_proxy_url()
         transport = None
         try:
             # 与 scraper/robots.py 同款：curl_cffi 浏览器指纹，抗反爬、少被 SERP 判为爬虫
+            from curl_cffi import CurlOpt
             from httpx_curl_cffi import AsyncCurlTransport
 
-            transport = AsyncCurlTransport(impersonate="chrome120", default_headers=True)
+            # 必须显式传 curl_options：httpx_curl_cffi 在调用方没给 curl_options 时，会把
+            # 它自己算好的 NOPROXY 丢掉（transport.py 里 curl_options = params.get(...) or {}
+            # 取到 None 后新建了一个 dict，而最后返回的仍是 params 里那份），于是 libcurl
+            # 转去读进程环境里的 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY —— 表现为「代码里
+            # 明确要求直连（trust_env=False、PROXY_PORT=0），但只要 shell 里设过代理、而
+            # 代理又没开，整条搜索引擎链就一起失败」（curl (7) 连不上 127.0.0.1）。
+            # 这里显式传 NOPROXY：直连时置 "*"（忽略一切环境代理），显式配置代理时置 ""
+            # （对所有主机都启用该代理）。语义与 AI 客户端一致：只认显式配置，不认环境变量。
+            transport = AsyncCurlTransport(
+                impersonate="chrome120",
+                default_headers=True,
+                proxy=proxy,
+                curl_options={CurlOpt.NOPROXY: "" if proxy else "*"},
+            )
         except Exception as e:  # pragma: no cover - 依赖缺失时退回原生 httpx
             logger.debug("[FreeSearch] curl_cffi transport 不可用，退回 httpx: %s", e)
         kwargs: dict = {
@@ -398,13 +457,10 @@ class FreeSearchClient(BaseSearchClient):
             },
         }
         if transport is not None:
+            # 代理已交给 transport（它必须同时拿到 proxy 与 NOPROXY 才生效），不能再给
+            # httpx 传 proxy，否则 httpx 会另建一套挂载与它打架。
             kwargs["transport"] = transport
-        # 延迟导入：backend.scraper.__init__ -> backend.pipeline -> factory -> backend.search
-        # 会构成循环导入（bocha.py 采用同样的延迟导入写法）
-        from backend.scraper.proxy_config import get_proxy_url
-
-        proxy = get_proxy_url()
-        if proxy:
+        elif proxy:
             kwargs["proxy"] = proxy
         self._http_client = httpx.AsyncClient(**kwargs)
         self._owns_client = True
@@ -435,6 +491,9 @@ class FreeSearchClient(BaseSearchClient):
         self.attempts = []
         self.last_engine = None
         pool = self._pool(max_results)
+        # 记录「有结果但整体跑题」里相对最相关的一批：如果所有引擎都不合格，
+        # 就退回它，而不是空手而归（与 select_top 的相关性门槛同一原则）。
+        best_fallback: Optional[tuple] = None  # (coverage, name, hits)
 
         for name in self._engines:
             fn = ENGINE_REGISTRY.get(name)
@@ -455,10 +514,41 @@ class FreeSearchClient(BaseSearchClient):
                 logger.info("[FreeSearch] 引擎 %s 返回 0 条，尝试下一个", name)
                 continue
 
+            # 有结果但明显跑题（典型：Bing 的「无结果回退」SERP）同样按失败处理并继续
+            # 回退。否则链会在第一个非空结果上停住 —— 这正是「Bing 没搜到东西却不再
+            # 回退到 exa-mcp」的原因。
+            coverage = relevance_coverage(query, hits)
+            if coverage < _RELEVANCE_MIN_COVERAGE:
+                self.attempts.append(
+                    EngineAttempt(name, False, count=len(hits), error="irrelevant SERP")
+                )
+                logger.info(
+                    "[FreeSearch] 引擎 %s 返回 %d 条但与查询无关（重合度 %.2f），尝试下一个",
+                    name,
+                    len(hits),
+                    coverage,
+                )
+                if best_fallback is None or coverage > best_fallback[0]:
+                    best_fallback = (coverage, name, hits)
+                continue
+
             self.attempts.append(EngineAttempt(name, True, count=len(hits)))
             self.engine_hits[name] = self.engine_hits.get(name, 0) + 1
             self.last_engine = name
             logger.info("[FreeSearch] 引擎 %s 命中 %d 条 (query=%r)", name, len(hits), query)
+            return [SearchResult(url=h.url, title=h.title, snippet=h.snippet) for h in hits]
+
+        if best_fallback is not None:
+            coverage, name, hits = best_fallback
+            logger.warning(
+                "[FreeSearch] 全部引擎都不合格 (query=%r)，退回相对最相关的一批: %s (%d 条, 重合度 %.2f)",
+                query,
+                name,
+                len(hits),
+                coverage,
+            )
+            self.engine_hits[name] = self.engine_hits.get(name, 0) + 1
+            self.last_engine = name
             return [SearchResult(url=h.url, title=h.title, snippet=h.snippet) for h in hits]
 
         logger.warning(
@@ -505,11 +595,8 @@ async def _engine_bing(client: FreeSearchClient, query: str, pool: int) -> List[
         hits.extend(page_hits)
         if len(unique_hits(hits)) >= pool:
             break
-    hits = unique_hits(hits)
-    # Bing 无结果时会返回无关缓存页：判 0 条，交给下一个引擎
-    if hits and not looks_relevant(query, hits):
-        logger.info("[FreeSearch][bing] 结果与查询无重叠，判为无效 SERP")
-        return []
+    # 相关性守门统一在引擎链（_do_search）里做：任何引擎返回「有结果但跑题」都会被
+    # 当作失败继续回退。这里只负责取回与解析。
     return unique_hits(hits, pool)
 
 
@@ -603,6 +690,7 @@ __all__ = [
     "parse_anysearch_payload",
     "parse_searxng_payload",
     "looks_relevant",
+    "relevance_coverage",
     "query_tokens",
     "clean_snippet",
     "strip_tags",

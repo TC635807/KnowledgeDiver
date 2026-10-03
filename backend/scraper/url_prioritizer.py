@@ -50,6 +50,11 @@ _LOW_QUALITY_TITLE_KEYWORDS = [
     '登录', '注册', '验证码',
 ]
 
+# 相关性门槛：摘要与查询的 n-gram 词面重合率低于 1/3 的候选不参与评选。
+# 用「重合率」而非「任一命中」—— 后者太松，只重合一个片段的页面（如查询
+# 「少女前线1剧情」却命中电影《少女》）也会被放进来。
+_MIN_RELEVANCE = 1.0 / 3.0
+
 # 高质量主域白名单定义已移至 domain_quality.py（域名质量语义归属底层模块，
 # 且 record_failure 需用同一份白名单做熔断豁免，避免双份定义漂移）。
 # 见 _HIGH_QUALITY_DOMAINS：技术社区 + 人文社科（百科/文化条目）。
@@ -93,13 +98,22 @@ def _title_score(title: str) -> float:
 
 
 def _snippet_relevance(snippet: str, query: str) -> float:
+    r"""摘要与查询的词面重合度（0~1）。
+
+    中文必须做 n-gram 切分：原来的 [\u4e00-\u9fff\w]{2,} 会把整条中文查询当成一个
+    token（「少女前线1」必须原样出现在摘要里才得分），实测把真实候选池从 10 条误杀到
+    1 条；而同一个仓库的 backend/search/free.py 里早就有正确的 1-2 字 n-gram 切分器。
+    摘要或查询为空时返回 0.5（无法判定，不参与淘汰）。
+    """
     if not snippet or not query:
         return 0.5
-    query_words = set(re.findall(r'[\u4e00-\u9fff\w]{2,}', query.lower()))
+    from backend.search.free import query_tokens  # 延迟导入，避免循环依赖
+
+    query_words = set(query_tokens(query))
     if not query_words:
         return 0.5
     snippet_lower = snippet.lower()
-    hits = sum(1 for w in query_words if w in snippet_lower)
+    hits = sum(1 for w in query_words if w.lower() in snippet_lower)
     return hits / len(query_words)
 
 
@@ -142,18 +156,19 @@ def select_top(
             "[select_top] query=%r: %d candidates → excluded %d (structure) / dup %d (path) / blocklist %d → %d scored",
             query, len(results), excluded, dup_skipped, blocked, len(scored),
         )
-    # 相关性门槛：query 非空时，snippet 与搜索词零重叠的 URL 不参与评选——
-    # 实测"太刀/猎人小刀/彩鸟"等跨领域多义词的搜索结果里，snippet 不含搜索词的
-    # 页面多是其他游戏/真实世界的同名概念（讨鬼传太刀、星界边境小刀、真实鸟类），
-    # 白名单硬优先会让它们照样入选。仅当全部候选都无相关性时才放宽（不空手而归）。
+    # 相关性门槛：query 非空时，摘要与查询词面重合度低于 _MIN_RELEVANCE 的候选不参与
+    # 评选——实测"太刀/猎人小刀/彩鸟"等跨领域多义词的搜索结果里，低重合的页面多是其他
+    # 游戏/真实世界的同名概念（讨鬼传太刀、星界边境小刀、真实鸟类），白名单硬优先会让
+    # 它们照样入选。仅当全部候选都低于门槛时才放宽（不空手而归）。
     if query:
-        relevant = [x for x in scored if x[6] > 0.0]
+        total_candidates = len(scored)
+        relevant = [x for x in scored if x[6] >= _MIN_RELEVANCE]
         if relevant:
-            dropped = len(scored) - len(relevant)
+            dropped = total_candidates - len(relevant)
             scored = relevant
             logger.info(
-                "[select_top] relevance gate: %d/%d candidates have snippet overlap with query, dropped %d",
-                len(relevant), len(scored) + dropped, dropped,
+                "[select_top] relevance gate: %d/%d candidates have enough snippet overlap with query, dropped %d",
+                len(relevant), total_candidates, dropped,
             )
     scored.sort(key=lambda x: x[1], reverse=True)
     # 白名单硬优先：分层取选——site_s 0.2 权重仅 +0.1 优势，压不住 d_s=1.0 的低质站
