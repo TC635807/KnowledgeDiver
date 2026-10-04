@@ -41,5 +41,5 @@ coverage==7.13.5
 # 推荐先单独装 CPU 版（约 180-200MB），再装本文件：
 #   pip install --index-url https://download.pytorch.org/whl/cpu torch
 #   pip install -r requirements.txt
-# start.sh / server_start.sh 默认已按此顺序安装；需要 GPU 版时设 TORCH_CPU_ONLY=0。
+# start.sh 默认已按此顺序安装；需要 GPU 版时设 TORCH_CPU_ONLY=0。
 
