@@ -1,174 +1,287 @@
+<div align="center">
+
+<img src="readme/img/logo.svg" width="84" alt="KnowledgeDiver" />
+
 # KnowledgeDiver
 
-AI 驱动的本地优先知识收集与组织系统：输入关键词或文档，系统自动搜索、抓取、生成 Wiki 风格知识卡片，组织为树形结构并建立无向链接；同时提供语义搜索、质量评估与可自主改进知识库的 Agent。
+**Type a keyword. Get a knowledge graph.**
 
-> 本仓库是从内部完整系统剥离出的**核心代码版**：开箱即可免费自托管运行，不含任何商业化模块与内置密钥。详见[「本开源版不包含什么」](#本开源版不包含什么)。
+It searches the web for you, reads the actual pages, writes wiki-style cards,
+links them into a tree and an interactive graph — then audits that graph
+and tells you where it is still thin.
 
-## 核心能力
+[![License: MIT](https://img.shields.io/badge/license-MIT-7e14ff.svg?style=flat-square)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Node 18+](https://img.shields.io/badge/node-18%2B-43853d.svg?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Local-first](https://img.shields.io/badge/data-stays%20on%20your%20machine-111827.svg?style=flat-square)](#where-does-my-data-live)
+[![GitHub stars](https://img.shields.io/github/stars/TC635807/KnowledgeDiver?style=flat-square&logo=github)](https://github.com/TC635807/KnowledgeDiver/stargazers)
 
-### 1. 搜索 → 抓取 → 卡片流水线
-- **免费多引擎搜索（默认，无需任何 API key）**：Bing / AnySearch / Exa-MCP / DuckDuckGo / SearXNG 按优先级依次尝试，任一命中即止；取链机制与 DeepSeek Harness 的 `dsh-free-search` 插件同源（见 `backend/search/free.py`）。也可按需切换到 `bocha` / `baidu` / `exa` 等第三方搜索源。相关配置项：`DEFAULT_SEARCH_PROVIDER`、`FREE_SEARCH_ENGINES`、`ANYSEARCH_API_KEY`。
-- 候选池全量返回后由 URL 优先级器筛选。
-- 三级抓取：crawl4ai / Playwright（主路径）→ trafilatura → light HTML/BS4（兜底）。
-- 卡片由抓取**原文**直接生成（单来源截断 30,000 字符），避免“摘要的摘要”二次压缩。
-- 可组合 Pipeline：Source → Fetcher/Processor → CardBuilder → CardPersister → Embedder → Explorer，各阶段通过抽象接口可替换。
-- 文档上传：txt / md / pdf / docx → 结构分析 → 根卡 / 章节卡 / 细节卡三层卡片树。
+**English** · [简体中文](README.zh-CN.md) · [Live demo](https://knowledgediver.cloud) · [Quick start](#quick-start) · [How it works](#how-it-works)
 
-### 2. 卡片与知识组织
-- 每张卡片包含标题、Markdown 正文、元数据、来源 URL、标签、LLM 置信度。
-- 树方向由显式 `parent_id` 承载；卡片间另有 Obsidian 风格的**无向链接**（`links` / `backlinks` 对称维护，幂等）。
-- 前端支持树形 / 最新 / 标题三种排序，以及 vis-network 交互式知识图谱。
-- 卡片详情可回看抓取时保存的网页原文全文。
+[<img src="readme/img/hero-graph.png" alt="KnowledgeDiver workspace — card tree on the left, knowledge graph in the middle, Agent assistant on the right" width="880">](https://knowledgediver.cloud)
 
-### 3. 语义搜索
-- 本地 bge-small-zh-v1.5 嵌入模型 + sqlite-vec 向量索引。
-- 新卡片自动向量化；启动时自动补齐缺失向量索引。
-- 前端搜索自动优先语义搜索，失败时回退标题匹配。
+<sub>Card tree · knowledge graph · Agent assistant — click through to the live demo</sub>
 
-### 4. 质量评估与缺口分析
-- 四维评分：结构完整度 + 图论信号 + 语义融入度 + LLM 自评置信度，合成 `quality_score` / `gap_score`。
-- 提供全库质量报告、最薄弱卡片排行、gap 分布直方图与维度热图。
-- HDBSCAN 语义聚类做簇级健康度诊断，识别 weak / fragmented / undercovered 主题域。
+</div>
 
-### 5. Agent 助手
-- ReAct 式 Agent，13 个工具分为读层 / 处方层 / 写层。
-- 支持 `/loop` 自主迭代模式：持续评估薄弱卡片与薄弱簇，按需搜索、扩展、刷新和挂载。
-- Agent 循环后台化：页面刷新或 SSE 断开不取消正在执行的任务；重连后回放进度。
-- 写层工具连续失败自动熔断；工具名、卡片 ID、参数 JSON 均有多级容错。
-- 卡片搜索采用标题预检、query 领域锚定、树结构注入等机制抑制主题漂移和扁平化。
+## What it does
 
-### 6. 任务与断线恢复
-- 每次收集 / 扩展 / 刷新 / 文档分析都对应一个 Task。
-- SSE 实时推送 progress / card / complete / error 事件；刷新页面后通过任务流回放已生成卡片和当前进度。
+Give it a keyword, or drop in a document. It runs the whole loop by itself:
 
-## 技术栈
+```
+keyword / document
+      │
+  ⓐ   │  multi-engine web search    Bing · AnySearch · Exa-MCP · DuckDuckGo · SearXNG — no API key needed
+  ⓑ   │  three-tier fetching         browser rendering → trafilatura → plain HTML, whichever works
+  ⓒ   │  card generation             one card per source, written by your LLM from the full page text
+  ⓓ   │  organisation                explicit parent/child tree + Obsidian-style undirected links
+  ⓔ   │  retrieval                   local embeddings + sqlite-vec, 512-d cosine similarity
+  ⓕ   │  audit                       four-dimension quality score → gap score → where the graph is thin
+  ⓖ   │  agent                       /loop hunts down the thin spots and fills them on its own
+      ▼
+a knowledge base you can browse, edit, measure — and grow
+```
 
-| 层 | 技术 |
+Every card keeps the **full raw page text** it was written from, so you can always check the source instead
+of trusting a summary of a summary.
+
+## Why KnowledgeDiver
+
+- **It starts from a search, not from your files.** Most "AI knowledge base" tools wait for you to upload
+  documents. KnowledgeDiver goes out, finds the sources, reads them and files what it learned — one keyword
+  and one click produce a populated, cross-linked knowledge base.
+- **The output is a graph you can edit, not a chat log you scroll.** Cards land in an explicit parent/child
+  tree and are cross-linked Obsidian-style, with symmetric backlinks. The vis-network view makes the shape
+  of your knowledge visible at a glance.
+- **It measures itself.** Every card gets four scores — structure, graph signals, semantic fit, model
+  confidence. The library gets a gap histogram, a dimension heatmap and HDBSCAN cluster diagnostics that
+  flag **weak / fragmented / undercovered** topics. "What should I learn next" gets an answer that is not vibes.
+- **An agent that maintains the graph.** The ReAct agent ships 13 tools across read / prescribe / write
+  layers; `/loop` keeps it iterating on the weakest cards and clusters, and the loop survives closing the tab.
+- **Local-first, for real.** SQLite for metadata, one SQLite file per session for cards and raw pages,
+  `bge-small-zh-v1.5` running on CPU, `sqlite-vec` for vectors. No account, no telemetry, and the
+  official cloud is entirely optional.
+
+## Screenshots
+
+| Knowledge graph + Agent assistant | Card tree + card detail |
 | --- | --- |
-| 后端 | FastAPI + Python 3.10+ |
-| 前端 | React 18 + TypeScript + Vite + react-router-dom |
-| 可视化 | vis-network |
-| 存储 | 全局 SQLite（用户/会话元数据/域名质量等）+ 每会话独立 SQLite（cards / raw_pages / 向量索引） |
-| 向量 | sqlite-vec，512 维，cosine 距离 |
-| 嵌入 | bge-small-zh-v1.5，本地 CPU 推理 |
-| 搜索 | 免费多引擎（Bing/AnySearch/Exa-MCP/DDG/SearXNG）+ Bocha/Baidu/Exa 适配 |
-| 抓取 | crawl4ai / Playwright + trafilatura + httpx/BeautifulSoup |
-| 测试 | pytest + Vitest |
+| [<img src="readme/img/hero-graph.png" alt="Knowledge graph and agent assistant">](https://knowledgediver.cloud) | [<img src="readme/img/card-tree.png" alt="Card tree and card detail">](https://knowledgediver.cloud) |
 
-## 快速开始
+**Quality & gap analysis** — four-dimension scores, gap histogram, dimension heatmap, per-card ranking and cluster health:
+
+![Quality and gap analysis panel](readme/img/quality-analysis.png)
+
+## Features
+
+**Collect**
+
+- **Free multi-engine search** — Bing, AnySearch, Exa-MCP, DuckDuckGo and SearXNG, tried in a configurable
+  order until one returns results that genuinely match the query. No API key required.
+- **Three-tier fetching** — crawl4ai / Playwright with browser fingerprinting first, then trafilatura, then
+  plain HTTP + BeautifulSoup.
+- **Relevance gate** — an engine that returns a page of results unrelated to the query (Bing does this when
+  it finds nothing) counts as a failure, so the fallback chain keeps going instead of stopping on junk.
+- **robots.txt aware** — checked per domain, with domain quality learned across runs.
+- **Documents** — txt / md / pdf / docx are analysed for structure and expanded into a three-level card tree
+  (root → section → detail).
+
+**Organise**
+
+- Cards carry a title, a Markdown body, metadata, the source URL, tags and the model's confidence.
+- Tree direction is an explicit `parent_id` on top of which Obsidian-style **undirected links** are kept
+  symmetric and idempotent.
+- Sort by tree / newest / title, browse the interactive graph, and reopen the raw page text behind any card.
+
+**Retrieve**
+
+- Semantic search over locally computed `bge-small-zh-v1.5` embeddings stored in `sqlite-vec`
+  (512 dimensions, cosine distance). New cards are indexed automatically; missing vectors are backfilled at startup.
+- Falls back to title matching when the embedding model is unavailable.
+
+**Audit**
+
+- Four dimensions — structure completeness, graph signals, semantic integration, LLM self-confidence —
+  combined into `quality_score` and `gap_score`.
+- Library-wide quality report, weakest-card ranking, gap histogram and dimension heatmap.
+- HDBSCAN semantic clustering for cluster-level health: weak / fragmented / undercovered topic domains.
+
+**Automate**
+
+- A ReAct agent with 13 tools, split into read, prescription and write layers.
+- `/loop` mode: keep evaluating weak cards and clusters, then search, expand, refresh or attach cards to fix them.
+- Agent loops run in the background — refreshing the page or dropping the SSE connection does not cancel them,
+  and progress is replayed on reconnect.
+- Write-layer tools are circuit-broken after repeated failures.
+
+**Operate**
+
+- Every collection, expansion, refresh and document analysis is a **Task** with SSE `progress` / `card` /
+  `complete` / `error` events that can be replayed after a reconnect.
+
+## Quick start
 
 ```bash
-# 1) 直接启动开发环境（后端 :8000 + 前端 :3000）
-./start.sh            # Linux / macOS（Windows 用 start.bat）
-
-# start.sh 会自动完成这三件事（幂等，第二次启动不再重复）：
-#   a) .env 缺失时从 .env.example 生成，并写入随机 JWT_SECRET（后端唯一的强制项）
-#   b) 依赖缺失时安装（先装 CPU 版 PyTorch，避免多下 2.7GB CUDA 依赖）
-#   c) 嵌入模型缺失时下载 bge-small-zh-v1.5（约 92MB，默认走 hf-mirror 镜像）
-
-# 2) 手动准备（等价于上面 b/c，供离线或自定义场景）
-cp .env.example .env && vim .env      # JWT_SECRET 必填；搜索默认无需任何 key
-.venv/bin/pip install -U huggingface_hub
-HF_ENDPOINT=https://hf-mirror.com .venv/bin/huggingface-cli download \
-    BAAI/bge-small-zh-v1.5 --local-dir models/bge-small-zh-v1.5
-# 自定义镜像/仓库：HF_ENDPOINT=https://hf-mirror.com、HF_MODEL_REPO=...（见 start.sh）
-# 若模型目录不存在，程序会回退到在线 HF 名称 BAAI/bge-small-zh-v1.5（首次使用需联网）
-
-# 生产部署（同样会自动补齐 .env / 依赖 / 嵌入模型）
-./server_start.sh     # 安装依赖 + 后端重启 + 前端构建 + Nginx reload
+git clone https://github.com/TC635807/KnowledgeDiver.git
+cd KnowledgeDiver
+./start.sh          # Linux / macOS — on Windows use start.bat
 ```
 
-后端依赖统一由根目录 `requirements.txt` 管理；前端依赖由 `frontend/package.json` 管理。
+Then open **http://localhost:3000** (backend on `:8000`, dev UI on `:3000`).
 
-> **关于 PyTorch（避免多下 2.7GB）**：本项目的嵌入模型 `bge-small-zh-v1.5` 只做 **CPU** 推理，
-> 但 PyPI 上 Linux 版 `torch` 是 CUDA 构建，会连带安装 16 个 `nvidia-*` 包（实测合计约 2.7GB，
-> venv 会从约 1.8GB 膨胀到 5.7GB）。`start.sh` / `server_start.sh` 默认会**先装 CPU 版 torch（约 200MB）**
-> 再装其余依赖，因此正常流程不会再拉 CUDA 包。
-> 手动安装请按同样顺序：
-> ```bash
-> .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
-> .venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
-> ```
-> 需要 GPU 版时设 `TORCH_CPU_ONLY=0`；想换镜像设 `TORCH_CPU_INDEX=...`。
-> 若已误装 CUDA 版，可 `.venv/bin/pip uninstall -y torch` 后按上面重装。
+`start.sh` is idempotent and handles the three things that usually go wrong:
 
-> **必填项**：只有 `AI_API_KEY`（要生成卡片或使用 Agent 时）。`JWT_SECRET` 缺失时会自动生成并持久化到 `data/.jwt_secret`（本机文件、已 gitignore），不会阻止启动——但建议在 `.env` 里固定它。搜索默认免费，无需任何 key。
+1. creates `.env` from `.env.example` and writes a random `JWT_SECRET`;
+2. installs Python and Node dependencies — **CPU-only PyTorch first**, so it does not pull the 2.7 GB CUDA wheels;
+3. downloads the embedding model `bge-small-zh-v1.5` (~92 MB, via the `hf-mirror` mirror by default).
 
-## 配置
+**Requirements:** Python 3.10+ and Node 18+.
+**Keys:** search and crawling need none. Card generation and the agent need an OpenAI-compatible endpoint
+(`AI_API_URL` / `AI_API_KEY` / `AI_MODEL`) — point it at Ollama or another local server and nothing leaves your machine.
 
-环境变量集中读取于 `backend/config.py`，实际密钥放在 `.env`（已被 `.gitignore` 排除）。模板见 `.env.example`。
+## How it works
 
-> **也可以直接改：点击右上角头像 → 「⚙️ API 配置」**（在「日间/夜间模式」按钮下方）。
-> 可在界面上填写 **API 地址 / API Key / 模型名称** 并点「测试连接」验证；保存会**就地改写项目根目录的 `.env`**
-> （只替换 `AI_API_URL` / `AI_API_KEY` / `AI_MODEL` 三行，其它行与注释保持不动，**不新增任何配置文件**），
-> 同时同步进程环境，因此**立即生效、无需重启后端**。API Key 只存在服务端，接口只返回脱敏值。
-> 「删除 .env 中的配置」可回到代码默认值。
-> 接口：`GET / PUT /api/settings/ai`、`POST /api/settings/ai/test`、`POST /api/settings/ai/reset`。
-> 注：**卡片生成与 Agent 共用同一个模型**（不再有独立的 Agent 模型配置）。
+```mermaid
+flowchart LR
+    KW["keyword / document"] --> SRC["Search sources<br/>free engines · Bocha · Baidu · Exa"]
+    SRC --> FETCH["Fetchers<br/>crawl4ai / Playwright → trafilatura → HTTP+BS4"]
+    FETCH --> CB["CardBuilder<br/>one card per source, from the full text"]
+    CB --> PERSIST["CardPersister<br/>parent_id tree + undirected links"]
+    PERSIST --> EMB["Embedder<br/>bge-small-zh-v1.5 → sqlite-vec"]
+    EMB --> EXPL["Explorer<br/>tree · vis-network graph · semantic search"]
+    EXPL --> QUAL["Quality &amp; gap analysis<br/>4 scores · histogram · HDBSCAN clusters"]
+    QUAL --> AGENT["Agent /loop<br/>fills the gaps it finds"]
+    AGENT --> SRC
+```
 
-常用配置：
+Each stage is an abstract interface, so sources, fetchers, builders and embedders can be replaced without
+touching the rest of the pipeline.
 
-| 变量 | 默认值 | 说明 |
+| Module | Responsibility |
+| --- | --- |
+| `backend/pipeline/` | Composable pipeline and PipelineAPI |
+| `backend/search/` | Search adapters (free multi-engine / Bocha / Baidu / Exa) |
+| `backend/scraper/` | Three-tier fetching, robots.txt, domain quality, URL prioritisation |
+| `backend/ai/` | LLM calls and the local embedding model |
+| `backend/agent/` | Agent tools, loop, background manager |
+| `backend/quality/` | Scoring, cluster evaluation, improvement strategies |
+| `backend/storage/` | Storage abstraction and the SQLite implementation |
+| `frontend/src/` | React UI: card tree, graph, collector, agent drawer, quality panel |
+
+## Configuration
+
+All settings live in `.env` (created from `.env.example`, git-ignored). You can also edit the AI settings
+from the UI — **avatar → ⚙️ API 配置** — which rewrites those lines in `.env` in place and takes effect
+without a restart. API keys are never returned by the API, only masked.
+
+| Variable | Default | Notes |
 | --- | --- | --- |
-| `AI_API_URL` | `https://ollama.com/v1` | OpenAI 兼容 API 地址；可填完整 `/v1/responses` 端点，代码自动规范化 |
-| `AI_API_KEY` | 空 | API 密钥 |
-| `AI_MODEL` | `deepseek-v4.1-flash` | 卡片生成与 Agent **共用**的模型（只有一个模型） |
-| `AI_CONCURRENCY` | `2` | LLM 并发上限 |
-| `DEFAULT_SEARCH_PROVIDER` | `free` | 搜索源：`free` / `bocha` / `baidu` / `exa` |
-| `FREE_SEARCH_ENGINES` | `bing,anysearch,exa-mcp,ddg,searxng` | 免费引擎优先级（左→右，任一成功即止） |
-| `ANYSEARCH_API_KEY` | 空 | 可选，仅用于提高 AnySearch 匿名额度 |
-| `BOCHA_API_KEY` | 空 | 第三方搜索密钥（仅 `provider=bocha` 时需要） |
-| `MAX_CONCURRENT_TASKS` | `5` | 并发任务上限 |
-| 嵌入模型目录 | `models/bge-small-zh-v1.5/` | 该目录完整则离线加载本地权重；启动脚本会自动检测并下载（默认 hf-mirror 镜像） |
+| `AI_API_URL` | `https://ollama.com/v1` | Any OpenAI-compatible endpoint; full `/v1/responses` URLs are normalised |
+| `AI_API_KEY` | empty | Only needed for card generation and the agent |
+| `AI_MODEL` | `deepseek-v4.1-flash` | One model shared by card generation and the agent |
+| `AI_CONCURRENCY` | `2` | LLM concurrency limit |
+| `DEFAULT_SEARCH_PROVIDER` | `free` | `free` / `bocha` / `baidu` / `exa` |
+| `FREE_SEARCH_ENGINES` | `exa-mcp,anysearch,bing,ddg,searxng` | Engine priority, left to right |
+| `ANYSEARCH_API_KEY` | empty | Optional; only raises the anonymous quota |
+| `BOCHA_API_KEY` | empty | Required only when `provider=bocha` |
+| `MAX_CONCURRENT_TASKS` | `5` | Concurrent collection tasks |
+| `KD_SERVER_URL` | `https://knowledgediver.cloud` | Optional official server for account / forum / migration |
 
-## 项目结构
+> Bing silently degrades to searching the first word when a multi-word Chinese query has no exact match, so
+> the default engine order prefers `exa-mcp` and `anysearch`. Reorder `FREE_SEARCH_ENGINES` to match
+> the network you are on.
 
-```
-backend/
-├── main.py                 # FastAPI 入口与安全中间件
-├── config.py               # 全局配置唯一来源
-├── routes/                 # API 路由（薄层）
-├── pipeline/               # 可组合搜索流水线 + PipelineAPI
-├── agent/                  # Agent 工具、循环、后台管理器
-├── quality/                # 质量评分、簇级评估、改进策略
-├── ai/                     # LLM 调用与本地嵌入模型
-├── search/                 # 搜索源适配（free 免费多引擎 / 博查 / 百度 / Exa）
-├── scraper/                # 三级抓取、域名质量、URL 优先级
-├── storage/                # 存储抽象与 SQLite 实现
-└── models/                 # Pydantic 模型与任务模型
+## FAQ
 
-frontend/src/
-├── components/             # 卡片树、图谱、收集器、Agent 抽屉、质量面板等
-├── hooks/                  # useSSE / useTaskManager / useAgent 等领域逻辑
-├── api/                    # API 调用层
-└── utils/                  # 树构建、图谱转换、Markdown 安全处理
+**Do I need an API key to try it?** No. Search, crawling, the card tree, the graph and quality analysis all
+work without one. An LLM endpoint is only needed to generate cards and to run the agent.
 
-cards/{username}/{session_id}/session.db   # 每会话独立知识库（运行时生成，已忽略）
-data/knowledgediver.db                     # 全局数据库（运行时生成，已忽略）
-models/bge-small-zh-v1.5/                  # 本地嵌入模型权重（需自行下载，已忽略）
-```
+**Can it run fully offline / with a local model?** Yes — point `AI_API_URL` at Ollama, vLLM or LM Studio.
+Embeddings are already computed locally.
 
-## 测试
+**Where does my data live?** In the project folder and nowhere else: `data/knowledgediver.db` (users,
+sessions, domain quality), `cards/{username}/{session_id}/session.db` (cards, raw pages, vectors) and
+`models/bge-small-zh-v1.5/` for the weights. All three are git-ignored.
+
+**Why does `start.sh` install CPU-only PyTorch?** The embedding model only does CPU inference, but the
+default Linux `torch` wheel on PyPI is a CUDA build that drags in 16 `nvidia-*` packages (~2.7 GB,
+turning a ~1.8 GB venv into ~5.7 GB). The scripts install the CPU wheel first. Set `TORCH_CPU_ONLY=0` if
+you actually want the GPU build.
+
+**Why doesn't my shell proxy apply?** By design: outbound requests use only the proxy you configure
+explicitly (`AI_PROXY_URL`, `PROXY_PORT`) and ignore `HTTP_PROXY` / `ALL_PROXY` environment variables,
+so a stopped local proxy cannot break the AI client or the search chain. `socksio` is included for `socks5://`.
+
+**Does it respect robots.txt?** Yes — checked per domain before fetching, with results cached per run.
+
+**Is the interface English?** Not yet: the UI and the code comments are in Chinese. An English UI is on the
+roadmap, and help with it is very welcome.
+
+## How it compares
+
+KnowledgeDiver is neither a note editor nor a chat box. It is the pipeline that builds a knowledge base for
+you and then audits it. The neighbours, in their own words:
+
+| Project | Their focus | How KnowledgeDiver differs |
+| --- | --- | --- |
+| [Reor](https://github.com/reorproject/reor) | "Private & local AI personal knowledge management app" | Reor is where you write and think; KnowledgeDiver goes out and collects. |
+| [Karakeep](https://github.com/karakeep-app/karakeep) | Self-hostable "bookmark everything" app with AI tagging | Karakeep stores what you already found; KnowledgeDiver searches, crawls and writes cards. |
+| [Khoj](https://github.com/khoj-ai/khoj) | AI search across your documents and the web | Khoj answers questions; KnowledgeDiver produces structured, editable knowledge. |
+| [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) | Chat with your docs, agents, multi-user workspaces | Chat/workspace-centric; KnowledgeDiver is graph-centric and audits its own quality. |
+| [SiYuan](https://github.com/siyuan-note/siyuan) | Privacy-first local knowledge management | Both are local-first; SiYuan is a block-based editor, KnowledgeDiver is an auto-collecting graph. |
+
+*(Descriptions above are each project's own positioning — check their docs for the latest.)*
+
+## Open-source edition vs the official cloud
+
+Everything in this repository is the real thing and runs on your machine.
+
+| | This repository (self-hosted) | [knowledgediver.cloud](https://knowledgediver.cloud) |
+| --- | --- | --- |
+| Search → crawl → cards → tree → graph | ✅ | ✅ |
+| Semantic search, quality and gap analysis | ✅ | ✅ |
+| Agent and `/loop` autonomy | ✅ | ✅ |
+| Multi-device session sync and migration | — | ✅ |
+| Account and community forum | — | ✅ |
+
+The cloud is an optional convenience: `KD_SERVER_URL` is the only thing pointing at it, and leaving it
+empty gives you a pure local app.
+
+Not included in this repository: the commercial modules, built-in API keys, and the research / patent /
+competition material of the upstream project.
+
+## Development
 
 ```bash
-# 后端
-cd tests/backend && pytest -v
-
-# 前端
-cd frontend && npm test
+cd tests/backend && pytest -v     # backend
+cd frontend && npm test           # frontend
 ```
 
-## 本开源版不包含什么
+`backend/` is a FastAPI application — routes are thin, and the logic lives in
+`pipeline/`, `agent/`, `quality/`, `scraper/` and `storage/`. `frontend/` is React 18 +
+TypeScript + Vite. `deploy/` contains systemd units and an nginx config for production.
 
-本仓库是从内部完整系统中剥离出的**核心代码版**，目标是开箱即可自托管运行。以下内容不在开源范围内：
+## Roadmap
 
-- **论文、专利与竞赛材料**：期刊/会议投稿、研究手稿、专利申报文件，以及各类学科竞赛材料。
-- **研究语料与实验记录**：内部评测数据集、实验日志、端到端审计产物与中间结果。
-- **嵌入模型权重**：不再内置 `bge-small-zh-v1.5` 权重（约 92MB）。`start.sh` / `server_start.sh` 会在启动时自动检测并下载到 `models/bge-small-zh-v1.5/`（默认走 hf-mirror 镜像），也可按「快速开始」手动准备。
-- **演示数据**：不含真实卡片库、示例数据库、用户数据或抓取缓存，`data/` 与 `models/` 仅保留占位文件。
-- **支付、订单、会员与积分等商业化模块**：在线收款、订单与订阅/权益相关的后端模块、前端页面及配置项（如 `PAY_*`）均已整体移除。
-- **内置密钥**：仓库中不含任何真实密钥，全部配置项统一通过 `.env` 提供，仓库内只有 `.env.example` 模板。
+- [x] Search → crawl → cards → tree and graph pipeline
+- [x] Semantic search on local embeddings
+- [x] Quality scoring, gap analysis and cluster diagnostics
+- [x] ReAct agent with `/loop` autonomy
+- [ ] English UI and English documentation
+- [ ] More interchangeable search backends and fetchers
+- [ ] Import / export for Obsidian and plain Markdown
+- [ ] Optional GPU embedding backend
+
+Scope and order may change — issues are the best place to argue about it.
+
+## Contributing
+
+Issues and pull requests are welcome. The UI and code comments are currently in Chinese, but PRs written in
+English are perfectly fine — and helping translate the interface is a great first contribution. Small,
+focused PRs that come with a test are the easiest to merge.
+
+If this project is useful to you, a ⭐ helps other people find it.
 
 ## License
 
-MIT（见 [LICENSE](LICENSE)）。
+MIT — see [LICENSE](LICENSE).
