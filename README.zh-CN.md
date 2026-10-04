@@ -243,7 +243,6 @@ cd frontend && npm test           # 前端
 
 `backend/` 是 FastAPI 应用 —— 路由很薄，逻辑在 `pipeline/`、`agent/`、`quality/`、
 `scraper/`、`storage/` 里。`frontend/` 是 React 18 + TypeScript + Vite。
-`deploy/` 里有生产用的 systemd unit 与 nginx 配置。
 
 ## 路线图
 

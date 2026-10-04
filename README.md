@@ -259,7 +259,7 @@ cd frontend && npm test           # frontend
 
 `backend/` is a FastAPI application — routes are thin, and the logic lives in
 `pipeline/`, `agent/`, `quality/`, `scraper/` and `storage/`. `frontend/` is React 18 +
-TypeScript + Vite. `deploy/` contains systemd units and an nginx config for production.
+TypeScript + Vite.
 
 ## Roadmap
 
