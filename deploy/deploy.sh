@@ -147,7 +147,7 @@ echo
 echo "  常用命令:"
 echo "    查看状态:   systemctl status knowledgediver"
 echo "    查看日志:   journalctl -u knowledgediver -f"
-echo "    更新部署:   bash $APP_DIR/server_start.sh"
+echo "    更新部署:   systemctl restart knowledgediver knowledgediver-frontend"
 echo "    重启后端:   systemctl restart knowledgediver"
 echo "    重启前端:   cd $APP_DIR/frontend && npm run build"
 echo
