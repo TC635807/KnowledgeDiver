@@ -249,8 +249,29 @@ CORS_ORIGINS_DEFAULT: str = (
     "http://localhost:8000,http://127.0.0.1:8000"
 )
 CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", CORS_ORIGINS_DEFAULT)
-# 端口可变（vite 自动换端口）时的兜底：仍然只放行回环来源
-CORS_ORIGIN_REGEX: str = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+# 端口可变（vite 自动换端口）时的兜底：回环 + 私有/本地网段。
+#
+# 为什么必须包含私有网段：vite.config.ts 的 server.host 是 0.0.0.0，启动横幅会打印
+# http://<局域网IP>:3000 的 Network 链接；用户点那个链接进来时，浏览器发出的 Origin
+# 就是局域网 IP。旧 regex 只放行回环 -> POST /api/auth/local-session 直接 403
+#「跨源请求被拒绝」，前端表现成「本地工作区启动失败」（实测 Origin=http://10.x.x.x:3000）。
+#
+# 这不削弱防护：后端只监听 127.0.0.1，请求仍然发自本机浏览器；真正的威胁（任意公网页面）
+# 其 Origin 是公网域名或公网 IP，依旧被拒。要收紧/扩展仍可用 CORS_ORIGINS /
+# CORS_ORIGIN_REGEX 两个环境变量覆盖。
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+CORS_ORIGIN_REGEX_DEFAULT: str = (
+    r"^https?://(?:"
+    r"localhost|[a-z0-9-]+\.local|"                       # 本机名 / mDNS
+    r"127\.0\.0\.1|\[::1\]|"                            # IPv4/IPv6 回环
+    r"10\." + _OCTET + r"\." + _OCTET + r"\." + _OCTET + r"|"
+    r"192\.168\." + _OCTET + r"\." + _OCTET + r"|"
+    r"172\.(?:1[6-9]|2\d|3[01])\." + _OCTET + r"\." + _OCTET + r"|"
+    r"169\.254\." + _OCTET + r"\." + _OCTET + r"|"
+    r"\[(?:f[cd][0-9a-f:]*|fe80[0-9a-f:]*)\]"             # IPv6 ULA / link-local
+    r")(?::\d+)?$"
+)
+CORS_ORIGIN_REGEX: str = os.getenv("CORS_ORIGIN_REGEX", CORS_ORIGIN_REGEX_DEFAULT)
 
 # JWT
 # 不再强制 raise：代理链路不需要它，本地账号只需要「有一个」密钥。

@@ -13,6 +13,7 @@ v3 之后主屏障已经是「内置本地账号的 token」（跨源 JS 读不�
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import override
 
@@ -21,6 +22,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 
 from backend.config import CORS_ORIGINS, CORS_ORIGIN_REGEX
+
+logger = logging.getLogger(__name__)
 
 _REJECTION = {"detail": "跨源请求被拒绝", "status_code": 403}
 
@@ -51,6 +54,14 @@ class OriginGuardMiddleware(BaseHTTPMiddleware):
         origin = request.headers.get("origin")
         if origin:
             if not origin_is_allowed(origin):
+                # 不打印这一行的话，前端只会看到「本地工作区启动失败」，无从判断是谁被拒了
+                logger.warning(
+                    "[OriginGuard] 拒绝跨源请求: origin=%r path=%s。"
+                    "若是你用局域网地址打开本机前端（vite 启动横幅里的 Network 链接），"
+                    "改用 http://localhost:3000 打开，或把该来源加进 CORS_ORIGINS",
+                    origin,
+                    request.url.path,
+                )
                 return JSONResponse(status_code=403, content=dict(_REJECTION))
         elif request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
             # 部分浏览器在跨源简单请求上省略 Origin，但有 Sec-Fetch-Site
