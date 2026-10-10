@@ -93,7 +93,11 @@ def create_pipeline(
     source = build_search_source(search_provider)
     processor = ScrapeAndSummarizeProcessor(fetcher, early_stop=2)
 
-    explorer = RelatedTopicExplorer(ai_provider, max_topics=max_topics, search_level=search_level)
+    # card_store / embedder：把「已有卡片标题」随提取关键词的 prompt 下发（防重复提取）
+    explorer = RelatedTopicExplorer(
+        ai_provider, max_topics=max_topics, search_level=search_level,
+        card_store=card_store, embedder=Embedder.get(),
+    )
 
     return Pipeline(
         source=source,
@@ -123,7 +127,10 @@ def create_document_pipeline(
         processor=ScrapeAndSummarizeProcessor(DocumentChunkFetcher()),
         builder=LLMCardBuilder(ai_provider),
         persister=CardStorePersister(card_store),
-        explorer=RelatedTopicExplorer(ai_provider, max_topics=max_topics, search_level=search_level),
+        explorer=RelatedTopicExplorer(
+            ai_provider, max_topics=max_topics, search_level=search_level,
+            card_store=card_store, embedder=Embedder.get(),
+        ),
         max_explore_depth=1,
         card_store=card_store,
         embedder=Embedder.get(),

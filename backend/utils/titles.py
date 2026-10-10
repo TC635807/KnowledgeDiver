@@ -17,6 +17,29 @@ def normalize_title(s: str) -> str:
     return s.replace("（", "(").replace("）", ")").lower()
 
 
+def title_containment(a: str, b: str) -> float:
+    """归一化标题的包含度（0~1），用于「向量像但未必是同一主题」的词面确认。
+
+    规则：
+    - 完全相等 → 1.0（通常已被标题预检拦下，这里只是兜底）；
+    - 一方是另一方子串（「免疫器官」⊂「中枢免疫器官」）→ 2*短/长，4 vs 6 字 = 0.80；
+    - 互不包含 → 0.0。
+
+    **为什么不用 difflib 字符相似度**：中文「带领域限定词的兄弟主题」相似度很高
+    但语义不同——实测「馕（印度烤饼）」vs「罗提（印度烤饼）」=0.80、
+    「坦都里（印度烤炉烹饪）」vs「坦都里鸡（印度菜）」=0.70，用 0.7 的相似度门槛会
+    把两个不同主题误合并。字符**包含**关系才是可靠的「同概念变体」信号。
+    """
+    na, nb = normalize_title(a or ""), normalize_title(b or "")
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    if na in nb or nb in na:
+        return 2 * min(len(na), len(nb)) / (len(na) + len(nb))
+    return 0.0
+
+
 def find_card_by_normalized_title(cards, title: str, exclude_id=None):
     """在卡片列表中按归一化精确标题查找，返回命中卡片或 None。
 

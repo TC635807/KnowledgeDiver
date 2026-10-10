@@ -34,6 +34,7 @@ from backend.search import free as free_mod  # noqa: E402
 from backend.search.free import (  # noqa: E402
     FreeSearchClient,
     Hit,
+    best_hit_coverage,
     clean_snippet,
     looks_relevant,
     parse_anysearch_payload,
@@ -174,6 +175,40 @@ def test_looks_relevant_flags_unrelated_cached_serp():
     assert looks_relevant("知识管理", parse_bing_html(BING_HTML)) is True
     # 纯符号查询无法判定 -> 不拦截
     assert looks_relevant("!!!", unrelated) is True
+
+
+def test_looks_relevant_accepts_serp_with_one_strong_hit():
+    """少数金结果 + 多数跑题结果：均值被拉垮但单条强命中 → 整批仍可用。
+
+    实测（anysearch，query='南印度米食料理' 同批查询）：10 条里 2 条完全对题，
+    平均重合度仍只有 0.25 → 旧口径整批被否，链继续回退到 ddg/searxng 白等 15s+。
+    """
+    query = "乌塔帕姆（厚煎饼）"
+    golden = Hit(
+        "https://good.example/uttapam",
+        "乌塔帕姆（厚煎饼）做法",
+        "乌塔帕姆 厚煎饼 南印度",
+    )
+    junk = [
+        Hit(f"https://junk.example/{i}", "无关页面", "与查询无关的内容")
+        for i in range(9)
+    ]
+    hits = [golden, *junk]
+
+    assert best_hit_coverage(query, hits) >= free_mod._RELEVANCE_MIN_HIT
+    assert free_mod.relevance_coverage(query, hits) < free_mod._RELEVANCE_MIN_COVERAGE
+    assert looks_relevant(query, hits) is True
+
+
+def test_looks_relevant_still_rejects_bing_fallback_serp():
+    """Bing「无结果回退」SERP：整页只命中首词 → 均值与最佳单条都不过线，仍要拦。"""
+    query = "战术人形（少女前线）"
+    hits = [
+        Hit(f"https://junk.example/{i}", "战术研究", "兵法 战术 历史")
+        for i in range(10)
+    ]
+    assert best_hit_coverage(query, hits) < free_mod._RELEVANCE_MIN_HIT
+    assert looks_relevant(query, hits) is False
 
 
 # ── 引擎回退链 ────────────────────────────────────────────────────────

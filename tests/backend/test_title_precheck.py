@@ -108,7 +108,7 @@ class FakeExplorer:
         self.tasks = tasks or []
 
     async def extract_topics(self, card_content, max_count=7, level="default",
-                             exclude_title=None, source_title=None):
+                             exclude_title=None, source_title=None, exclude_titles=None):
         return self.topics
 
     async def explore(self, cards):
@@ -155,6 +155,23 @@ def test_find_card_hit_and_miss():
     assert find_card_by_normalized_title([], "任意") is None
 
 
+def test_title_containment_confirms_variants_rejects_siblings():
+    """合并判定用的词面确认：靠「包含关系」，不靠字符相似度。
+
+    实测（bge-small-zh 场景）：
+    - 「中枢免疫器官」⊃「免疫器官」= 0.80 → 同概念变体，可合并；
+    - 「南印度米食料理」vs「印度食物」= 0.00（含相似度 0.55）→ 不同主题，不合并；
+    - 「馕（印度烤饼）」vs「罗提（印度烤饼）」字符相似度高达 0.80，但互不包含
+      → 兄弟主题，绝不能合并。
+    """
+    from backend.utils.titles import title_containment
+    assert title_containment("中枢免疫器官", "免疫器官") >= 0.7
+    assert title_containment("Transformer架构", "Transformer 架构") == 1.0
+    assert title_containment("南印度米食料理", "印度食物") == 0.0
+    assert title_containment("馕（印度烤饼）", "罗提（印度烤饼）") == 0.0
+    assert title_containment("", "任意") == 0.0
+
+
 def test_find_card_exclude_source():
     from backend.utils.titles import find_card_by_normalized_title
     src = _card("猎人（杀戮尖塔2）")
@@ -163,6 +180,127 @@ def test_find_card_exclude_source():
     # 排除源卡后仍有另一张同名卡 → 命中
     other = _card("猎人（杀戮尖塔2）")
     assert find_card_by_normalized_title([src, other], "猎人(杀戮尖塔2)", exclude_id=src.id) is other
+
+
+# ── extract prompt：已有卡片标题清单（防重复提取） ────────────────────
+
+def test_extract_prompt_lists_existing_titles():
+    """已有卡片标题必须进 prompt；不传/传空时不出现该规则块（行为与旧版一致）。"""
+    from backend.ai.openai_provider import OpenAIProvider
+    from backend.ai.provider import AIConfig
+    provider = OpenAIProvider(AIConfig(api_url="http://localhost:9", api_key="k", model="m"))
+
+    p = provider._build_extract_prompt(
+        "内容", 5, "default", source_title="印度食物",
+        exclude_titles=["坦都炉（印度烤炉）", "南印度料理"],
+    )
+    assert "已有卡片（禁止重复）" in p
+    assert "坦都炉（印度烤炉）" in p and "南印度料理" in p
+
+    p2 = provider._build_extract_prompt("内容", 5, "default", source_title="印度食物")
+    assert "已有卡片（禁止重复）" not in p2
+
+    p3 = provider._build_extract_prompt("内容", 5, "default", exclude_titles=[])
+    assert "已有卡片（禁止重复）" not in p3
+
+
+def test_extract_prompt_redirect_follows_search_level():
+    """「禁止重复之后改提什么」必须跟随搜索颗粒度，不能写死成子概念。
+
+    前端下拉：默认搜索 / 下级搜索(downstream) / 平级搜索(peer) / 上级搜索(upstream)。
+    """
+    from backend.ai.openai_provider import OpenAIProvider
+    from backend.ai.provider import AIConfig
+    provider = OpenAIProvider(AIConfig(api_url="http://localhost:9", api_key="k", model="m"))
+    titles = ["坦都炉（印度烤炉）"]
+
+    cases = {
+        "downstream": "更深一层的子概念",
+        "peer": "同层次的兄弟主题",
+        "upstream": "更上层的父概念",
+        "default": "不同的具体主题",
+    }
+    for level, hint in cases.items():
+        prompt = provider._build_extract_prompt(
+            "内容", 5, level, source_title="印度食物", exclude_titles=titles,
+        )
+        assert hint in prompt, f"{level} 的改提方向应是「{hint}」"
+        assert "已有卡片（禁止重复）" in prompt
+        # 与颗粒度自带的层级指令一致（不能两条指令打架）
+        if level == "upstream":
+            assert "更深一层的子概念" not in prompt
+        if level == "downstream":
+            assert "更上层的父概念" not in prompt
+
+    # 未知 level 退化为 default 的措辞
+    unknown = provider._build_extract_prompt("内容", 5, "weird", exclude_titles=titles)
+    assert "不同的具体主题" in unknown
+
+
+class CapturingExplorer(FakeExplorer):
+    """记录下发给模型的已有标题清单。"""
+
+    def __init__(self, topics=None):
+        super().__init__(topics=topics)
+        self.seen_exclude_titles = None
+
+    async def extract_topics(self, card_content, max_count=7, level="default",
+                             exclude_title=None, source_title=None, exclude_titles=None):
+        self.seen_exclude_titles = list(exclude_titles or [])
+        return list(self.topics)
+
+
+def test_collect_existing_titles_returns_all_when_under_cap():
+    from backend.pipeline.exclusions import collect_existing_titles
+    src, a, b = _card("源卡"), _card("主题A"), _card("主题B")
+    store = StubStore([src, a, b])
+    titles = run(collect_existing_titles(store, focus_text="正文", exclude_id=src.id))
+    assert titles == ["主题A", "主题B"]           # 源卡自身不在清单里
+
+
+def test_collect_existing_titles_caps_prioritizing_children_then_neighbours():
+    from backend.pipeline.exclusions import collect_existing_titles
+    src = _card("源卡")
+    child = _card("子主题")
+    child.parent_id = src.id
+    near, far = _card("近邻主题"), _card("无关主题")
+    store = StubStore([src, far, near, child], similar=[(near.id, 0.4)])
+
+    titles = run(collect_existing_titles(
+        store, focus_text="正文", exclude_id=src.id, embedder=StubEmbedder(), cap=2,
+    ))
+    assert titles == ["子主题", "近邻主题"]        # 子卡优先，其次向量近邻
+
+
+def test_collect_existing_titles_degrades_to_empty():
+    from backend.pipeline.exclusions import collect_existing_titles
+    store = StubStore([_card("A")])
+    assert run(collect_existing_titles(store, cap=0)) == []      # 关闭
+    assert run(collect_existing_titles(None)) == []              # 无 store
+
+    class Boom:
+        def list_cards(self):
+            raise RuntimeError("db down")
+
+    assert run(collect_existing_titles(Boom())) == []            # 异常不打断流水线
+
+
+def test_run_expand_sends_existing_titles_to_explorer(tmp_path):
+    """run_expand 必须把已有卡片标题（除源卡自身）下发给提取 prompt。"""
+    store = _store(tmp_path)
+    src_card = _card("印度食物")
+    store.create_card(src_card)
+    store.create_card(_card("坦都炉（印度烤炉）"))
+    store.create_card(_card("南印度料理"))
+    explorer = CapturingExplorer(topics=[])
+    pipe = _pipeline(FakeSource(), store, explorer=explorer)
+
+    run(_collect(pipe.run_expand("源内容", src_card.id, max_topics=5)))
+
+    assert explorer.seen_exclude_titles is not None
+    assert "坦都炉（印度烤炉）" in explorer.seen_exclude_titles
+    assert "南印度料理" in explorer.seen_exclude_titles
+    assert "印度食物" not in explorer.seen_exclude_titles, "源卡自身不应进清单"
 
 
 # ── extract prompt 领域锚定（锚定职责前移） ──────────────────────────
@@ -356,3 +494,129 @@ def test_run_explore_task_not_anchored(tmp_path):
     assert subtopic_queries, "explore 子主题应进入搜索"
     # 旧实现: "时域分析方法 二阶系统"；方案 B: 长词原样直通（含重搜次数）
     assert all(q == "时域分析方法" for q in subtopic_queries)
+
+
+# ── run_expand 关键词合并：向量近 ≠ 同一主题 ─────────────────────────
+
+class StubStore:
+    """只实现 run_expand 去重路径用到的方法（不依赖 sqlite-vec）。"""
+
+    def __init__(self, cards, similar=None):
+        self._cards = {c.id: c for c in cards}
+        self._similar = list(similar or [])      # [(card_id, distance)]
+
+    def list_cards(self):
+        return list(self._cards.values())
+
+    def read_card(self, card_id):
+        return self._cards.get(card_id)
+
+    def get_root_cards(self):
+        return list(self._cards.values())
+
+    def vector_search(self, embedding, limit=3, threshold=0.7):
+        # 与 SqliteCardStore 一致：只返回 distance < threshold 的前 limit 条
+        return [(cid, d) for cid, d in self._similar if d < threshold][:limit]
+
+
+class StubEmbedder:
+    async def encode_one(self, text):
+        return [0.0]
+
+    async def encode(self, texts):
+        return [[0.0] for _ in texts]
+
+
+def _expand_pipe(store, explorer, src):
+    return Pipeline(
+        source=src,
+        processor=FakeProcessor(),
+        builder=FakeBuilder(),
+        persister=FakePersister(),
+        explorer=explorer,
+        max_explore_depth=0,
+        card_store=store,
+        embedder=StubEmbedder(),
+    )
+
+
+def test_run_expand_does_not_merge_other_topic_with_close_vector():
+    """向量距离 0.364（< 0.40 阈值）但标题无包含关系 → 不同主题，必须建卡。
+
+    实测回归：「南印度米食料理」被已有卡「印度食物」误合并（dist=0.364），
+    主题被静默丢掉——bge-small-zh 对「子概念 vs 上位概念」同样给很小的距离。
+    """
+    src_card = _card("印度食物")
+    existing = _card("印度食物")          # 已有卡（与源卡不同 id）
+    store = StubStore([src_card, existing], similar=[(existing.id, 0.364)])
+    src = FakeSource()
+    explorer = FakeExplorer(topics=["南印度米食料理"])
+    pipe = _expand_pipe(store, explorer, src)
+
+    events = run(_collect(pipe.run_expand("源内容", src_card.id, max_topics=5)))
+
+    assert "南印度米食料理" in src.queries, "不同主题必须照常搜索建卡"
+    assert not any("已覆盖" in getattr(e, "message", "") for e in events)
+
+
+def test_run_expand_merges_title_variant_even_when_only_vector_is_close():
+    """向量近 + 标题包含（「中枢免疫器官」⊃「免疫器官」）→ 判为重复，跳过搜索。"""
+    src_card = _card("免疫系统")
+    existing = _card("免疫器官")
+    store = StubStore([src_card, existing], similar=[(existing.id, 0.352)])
+    src = FakeSource()
+    explorer = FakeExplorer(topics=["中枢免疫器官"])
+    pipe = _expand_pipe(store, explorer, src)
+
+    events = run(_collect(pipe.run_expand("源内容", src_card.id, max_topics=5)))
+
+    assert src.queries == [], "同概念变体应被合并，零搜索"
+    assert any("已合并" in getattr(e, "message", "") for e in events)
+
+
+def test_run_expand_merges_when_vector_is_strictly_close():
+    """距离 ≤ MERGE_DISTANCE_STRICT（0.30）→ 语义重复，无需词面确认。"""
+    src_card = _card("深度学习")
+    existing = _card("反向传播算法")
+    store = StubStore([src_card, existing], similar=[(existing.id, 0.25)])
+    src = FakeSource()
+    explorer = FakeExplorer(topics=["梯度下降法"])
+    pipe = _expand_pipe(store, explorer, src)
+
+    events = run(_collect(pipe.run_expand("源内容", src_card.id, max_topics=5)))
+
+    assert src.queries == [], "强语义重复应被合并"
+    assert any("已合并" in getattr(e, "message", "") for e in events)
+
+
+# ── 提取关键词期间的心跳进度 ─────────────────────────────────────────
+
+class SlowExplorer(FakeExplorer):
+    """模拟 AI 关键词提取耗时（上游实测 3s~70s 波动）。"""
+
+    def __init__(self, delay=0.35, topics=None):
+        super().__init__(topics=topics)
+        self.delay = delay
+
+    async def extract_topics(self, card_content, max_count=7, level="default",
+                             exclude_title=None, source_title=None, exclude_titles=None):
+        await asyncio.sleep(self.delay)
+        return list(self.topics)
+
+
+def test_run_expand_emits_heartbeat_while_extracting(tmp_path, monkeypatch):
+    """提取关键词期间必须持续发进度，避免 UI 一直停在 0.1 的「提取关键词」。"""
+    from backend.pipeline import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "EXTRACT_KEYWORD_HEARTBEAT_SECONDS", 0.1)
+    store = _store(tmp_path)
+    src_card = _card("源卡")
+    store.create_card(src_card)
+    pipe = _pipeline(FakeSource(), store, explorer=SlowExplorer(delay=0.35))
+
+    events = run(_collect(pipe.run_expand("源内容", src_card.id, max_topics=5)))
+
+    heartbeats = [e for e in events if "已等待" in getattr(e, "message", "")]
+    assert heartbeats, "提取关键词期间必须发心跳进度"
+    assert all(getattr(e, "stage", "") == "expanding" for e in heartbeats)
+    assert all(getattr(e, "progress", 1) == 0.1 for e in heartbeats)

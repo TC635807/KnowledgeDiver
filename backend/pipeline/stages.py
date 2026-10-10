@@ -130,8 +130,17 @@ class Explorer(ABC):
 
     @abstractmethod
     async def extract_topics(
-        self, card_content: str, max_count: int = 7, level: str = "default"
+        self, card_content: str, max_count: int = 7, level: str = "default",
+        exclude_title: Optional[str] = None, source_title: Optional[str] = None,
+        exclude_titles: Optional[List[str]] = None,
     ) -> List[str]:
+        """从卡片正文提取延申主题。
+
+        exclude_title: 源卡标题（禁止提取与它相同/近义的主题）
+        source_title: 源卡标题（领域锚定声明）
+        exclude_titles: 知识库里**已有**的卡片标题清单，随 prompt 下发，
+            让模型直接避开已有主题（见 pipeline/exclusions.py）。
+        """
         ...
 
     @abstractmethod

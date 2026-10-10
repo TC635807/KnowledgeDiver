@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set
 
 from pydantic import BaseModel
 
-from backend.config import DEFAULT_SESSION_ID
+from backend.config import DEFAULT_SESSION_ID, IDLE_CANCEL_GRACE_SECONDS
 from backend.models import Card
 
 logger = logging.getLogger(__name__)
@@ -169,12 +169,21 @@ class Task:
         self.updated_at = datetime.utcnow()
 
     def _schedule_idle_cancel(self):
-        """Cancel task if no client reconnects within 30 seconds."""
+        """无订阅者超过宽限期则取消任务（宽限期见 IDLE_CANCEL_GRACE_SECONDS，默认 300s）。
+
+        原为 30s：前端切会话（App.tsx 只渲染当前会话的任务卡）/刷新页面会让 SSE
+        短暂断开，重新挂载后才重连；30s 窗口会把正在跑的收集/延申任务静默
+        cancel 掉，而前端此时没有连接、收不到任何事件，任务卡就永久停在最后一帧
+        （实测：三个 expand 任务 11:36:36 断流 → 11:37:06 三条 "No clients for 30s"）。
+        """
 
         async def _idle_timer():
-            await asyncio.sleep(30)
+            await asyncio.sleep(IDLE_CANCEL_GRACE_SECONDS)
             if self._subscriber_count <= 0 and self.status == TaskStatus.RUNNING:
-                logger.info(f"[Task {self.task_id}] No clients for 30s, auto-cancelling")
+                logger.info(
+                    "[Task %s] No clients for %ds, auto-cancelling",
+                    self.task_id, IDLE_CANCEL_GRACE_SECONDS,
+                )
                 self.cancel()
 
         self._idle_cancel_timer = asyncio.create_task(_idle_timer())

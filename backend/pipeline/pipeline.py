@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator, List, Optional
 from urllib.parse import urlparse
 
 from backend.links.manager import LinkManager
 from backend.models.card import Card
 from backend.config import PIPELINE_TIMEOUT_QUEUE
-from backend.utils.titles import find_card_by_normalized_title
+from backend.utils.titles import find_card_by_normalized_title, title_containment
+from backend.pipeline.exclusions import collect_existing_titles
 from backend.pipeline.stages import (
     CardBuilder,
     CardPersister,
@@ -31,8 +33,23 @@ from backend.pipeline.stages import (
 logger = logging.getLogger(__name__)
 
 
-# 向量搜索合并阈值——语义距离小于此值则合并到已有卡片
+# 向量搜索合并阈值——语义距离小于此值才**进入候选**（不等于直接合并）
 MERGE_DISTANCE_THRESHOLD = 0.40
+
+# 直接判定为「语义重复」的距离阈值：不必再做词面确认。
+MERGE_DISTANCE_STRICT = 0.30
+
+# 词面确认阈值：距离在 (STRICT, THRESHOLD] 之间时，只有归一化标题存在包含关系
+# 且包含度 ≥ 此值才合并（「中枢免疫器官」⊃「免疫器官」= 0.80 ✓）。
+# 背景：bge-small-zh 对「子概念/上位概念」这类真正不同的主题也给很小的距离
+# （实测「南印度米食料理」↔ 已有卡「印度食物」dist=0.364 → 被 0.40 阈值误合并，
+# 白丢一个主题），单靠距离阈值无解；加一层包含度确认后，同概念变体仍能拦住重复，
+# 不同主题（含「馕（印度烤饼）」/「罗提（印度烤饼）」这类兄弟主题）正常建卡。
+MERGE_TITLE_CONTAINMENT = 0.70
+
+# 关键词提取（AI 调用）期间的心跳间隔：期间发进度事件，避免 UI 看起来卡死
+# （ollama.com 实测同一步 3s~70s 波动，且排队等 AI 并发槽位时没有任何日志）。
+EXTRACT_KEYWORD_HEARTBEAT_SECONDS = 5.0
 
 # 软锚定（方案 C）：短词才拼接源卡标题——长词/带括号限定词已自包含
 ANCHOR_MAX_LEN = 4
@@ -379,16 +396,62 @@ class Pipeline:
                 parent_card = self.card_store.read_card(source_card_id)
                 if parent_card:
                     parent_title = parent_card.title
-            topics = await self.explorer.extract_topics(
-                card_content, max_topics, search_level,
-                exclude_title=parent_title, source_title=parent_title,
+            # 已有卡片标题随 prompt 下发：让模型直接避开已有主题，而不是先提出来再被
+            # 标题预检/向量合并逐条丢掉（白花一轮搜索+抓取+摘要+生成）。
+            exclude_titles: List[str] = []
+            try:
+                exclude_titles = await collect_existing_titles(
+                    self.card_store, focus_text=card_content,
+                    exclude_id=source_card_id, embedder=self.embedder,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[Pipeline] run_expand: 收集已有卡片标题失败: %s", e)
+            logger.info(
+                "[Pipeline] run_expand: 提交关键词提取（AI）；下发 %d 个已有标题防重复，"
+                "排队/生成期间每 %.0fs 发一次心跳",
+                len(exclude_titles), EXTRACT_KEYWORD_HEARTBEAT_SECONDS,
             )
+            started = time.monotonic()
+            extract_task = asyncio.ensure_future(
+                self.explorer.extract_topics(
+                    card_content, max_topics, search_level,
+                    exclude_title=parent_title, source_title=parent_title,
+                    exclude_titles=exclude_titles,
+                )
+            )
+            try:
+                while True:
+                    try:
+                        topics = await asyncio.wait_for(
+                            asyncio.shield(extract_task),
+                            timeout=EXTRACT_KEYWORD_HEARTBEAT_SECONDS,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        # 上游实测 3s~70s 波动，排队等 AI 并发槽位时更长；
+                        # 这里持续发进度，前端才不会一直停在 0.1 的「提取关键词」。
+                        waited = int(time.monotonic() - started)
+                        logger.info(
+                            "[Pipeline] run_expand: 仍在提取关键词（已等待 %ds，"
+                            "可能正在排队等 AI 并发槽位）", waited,
+                        )
+                        yield PipelineProgress(
+                            stage="expanding",
+                            message=f"AI 正在提取关键词…已等待 {waited}s",
+                            progress=0.1,
+                        )
+            finally:
+                if not extract_task.done():
+                    extract_task.cancel()
         except Exception as e:
             logger.warning(f"[Pipeline] Failed to extract topics: {e}")
             yield PipelineProgress(stage="error", message=f"提取关键词失败: {e}")
             return
 
-        logger.info("[Pipeline] run_expand extracted topics: %s", topics)
+        logger.info(
+            "[Pipeline] run_expand extracted topics (%.1fs): %s",
+            time.monotonic() - started, topics,
+        )
         if not topics:
             yield PipelineProgress(
                 stage="complete", message="未找到相关关键词", progress=1.0
@@ -412,6 +475,12 @@ class Pipeline:
             （实测：expand「免疫器官」时「中枢免疫器官」~「免疫系统」dist=0.352，
             create_link(免疫器官, 免疫系统) 后 27 张卡全部带 backlinks，根卡消失）。
             merge 的职责是去重跳过，不是建链。
+
+            判定 = 距离足够近（≤ MERGE_DISTANCE_STRICT）**或** 距离过线但标题存在
+            包含关系（包含度 ≥ MERGE_TITLE_CONTAINMENT）。只看向量距离会把
+            「子概念 vs 上位概念」这类不同主题一并吞掉（「南印度米食料理」↔
+            「印度食物」dist=0.364），而只靠词面又会漏掉「中枢免疫器官 ↔
+            免疫器官」这种无公共子串的变体——两者都要。
             """
             if not self.card_store or not self.embedder:
                 return False
@@ -426,11 +495,19 @@ class Pipeline:
                 existing = self.card_store.read_card(sid)
                 if not existing:
                     continue
+                contain = title_containment(topic, existing.title)
+                if d <= MERGE_DISTANCE_STRICT or contain >= MERGE_TITLE_CONTAINMENT:
+                    logger.info(
+                        "[Pipeline] Keyword merge: '%s' 已被已有卡片「%s」覆盖 "
+                        "(dist=%.3f, 标题包含度=%.2f)，跳过建卡",
+                        topic, existing.title, d, contain,
+                    )
+                    return True
                 logger.info(
-                    "[Pipeline] Keyword merge: '%s' 已被已有卡片「%s」覆盖 (dist=%.3f)，跳过建卡",
-                    topic, existing.title, d,
+                    "[Pipeline] Keyword merge 放弃: '%s' 与已有卡「%s」距离 %.3f（够近）"
+                    "但标题无包含关系/包含度仅 %.2f（低于 %.2f），判为不同主题，照常建卡",
+                    topic, existing.title, d, contain, MERGE_TITLE_CONTAINMENT,
                 )
-                return True
             return False
 
         for topic in topics:

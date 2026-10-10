@@ -831,7 +831,12 @@ const AppContent: React.FC = () => {
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: layout.collecterExpanded ? 10 : 0, display: layout.collecterExpanded ? 'block' : 'none' }}>
               {(() => {
-                const sessionTasks = Array.from(taskMgr.searchTasks).filter(([_, t]) => t.sessionId === sessionMgr.selectedSessionId || !t.sessionId)
+                // 运行中的任务不受会话过滤：只渲染当前会话会让「切会话」把运行中的任务卡
+                // 卸载 → SSE 断开 → 后端空闲计时器可能在任务跑完前把它取消，而前端此时
+                // 没有连接、收不到任何事件，任务卡就永久停在最后一帧（实测三个 expand 被静默杀掉）。
+                const sessionTasks = Array.from(taskMgr.searchTasks).filter(
+                  ([_, t]) => t.sessionId === sessionMgr.selectedSessionId || !t.sessionId || t.status === 'running'
+                )
                 if (sessionTasks.length === 0) {
                   return <div style={{ color: 'var(--text-secondary, #9ca3af)', textAlign: 'center', padding: 20 }}>输入关键词点击"收集"搜索，或点击"上传"分析本地文档</div>
                 }

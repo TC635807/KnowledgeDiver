@@ -499,10 +499,29 @@ class CardStorePersister(CardPersister):
 
 
 class RelatedTopicExplorer(Explorer):
-    def __init__(self, ai_provider: Any, max_topics: int = 7, search_level: str = "default"):
+    def __init__(self, ai_provider: Any, max_topics: int = 7, search_level: str = "default",
+                 card_store: Any = None, embedder: Any = None):
         self.ai_provider = ai_provider
         self.max_topics = max_topics
         self.search_level = search_level
+        # 可选：把「已有卡片标题」随 prompt 下发，让模型直接避开已有主题
+        # （见 pipeline/exclusions.py）。缺省 None 时退化为不下发，行为与旧版一致。
+        self.card_store = card_store
+        self.embedder = embedder
+
+    async def _existing_titles(self, focus_text: str, exclude_id: str | None) -> List[str]:
+        """收集已有卡片标题；任何异常都退化为 []（不打断探索）。"""
+        if self.card_store is None:
+            return []
+        try:
+            from backend.pipeline.exclusions import collect_existing_titles
+            return await collect_existing_titles(
+                self.card_store, focus_text=focus_text, exclude_id=exclude_id,
+                embedder=self.embedder,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Explorer] 收集已有卡片标题失败: %s", e)
+            return []
 
     async def explore(self, cards: List[Card]) -> AsyncIterator[ExploreTask]:
         for card in cards:
@@ -512,6 +531,7 @@ class RelatedTopicExplorer(Explorer):
                 topics = await self.ai_provider.extract_related_topics(
                     card.content, self.max_topics, self.search_level,
                     exclude_title=card.title, source_title=card.title,
+                    exclude_titles=await self._existing_titles(card.content, card.id),
                 )
                 for t in topics:
                     yield ExploreTask(query=str(t), parent_card_id=card.id)
@@ -521,11 +541,15 @@ class RelatedTopicExplorer(Explorer):
     async def extract_topics(
         self, card_content: str, max_count: int = 7, level: str = "default",
         exclude_title: str | None = None, source_title: str | None = None,
+        exclude_titles: List[str] | None = None,
     ) -> List[str]:
         try:
+            if exclude_titles is None:
+                exclude_titles = await self._existing_titles(card_content, None)
             return await self.ai_provider.extract_related_topics(
                 card_content, max_count, level,
                 exclude_title=exclude_title, source_title=source_title,
+                exclude_titles=exclude_titles,
             )
         except Exception:
             return []

@@ -43,6 +43,9 @@ AI_PROXY_PORT: int = int(os.getenv("PROXY_PORT", "0"))
 #   AI_PROXY_URL=socks5://127.0.0.1:7897   （优先级最高，socks5 需 pip install socksio）
 #   PROXY_PORT=7897                         （复用全局代理端口，按 http://127.0.0.1:<port> 使用）
 AI_PROXY_URL: str = os.getenv("AI_PROXY_URL", "").strip()
+# 单次 AI 请求超时（秒）。流式请求下这是「相邻两个 chunk 之间」的上限：
+# 180s 是为长摘要（实测并发下可达 2.5 分钟）留的余量；调小可让卡死的流更快失败重试。
+AI_REQUEST_TIMEOUT: float = float(os.getenv("AI_REQUEST_TIMEOUT", "180"))
 
 # 卡片生成与 Agent 统一使用 AI_MODEL（不再有独立的 Agent 模型配置）
 # Agent 思考强度（deepseek-v4-flash 支持 low/high/max；思考模式开启时 temperature 不生效）
@@ -106,6 +109,9 @@ FREE_SEARCH_ENGINES: List[str] = [
     if e.strip()
 ]
 FREE_SEARCH_TIMEOUT: int = int(os.getenv("FREE_SEARCH_TIMEOUT", "15"))       # 单请求超时（秒）
+# 引擎链总预算（秒）：从第一个引擎开始计时，预算耗尽就停止尝试后续引擎
+# （避免 ddg 15s 超时 + searxng 无响应把一次查询拖到 40s+），已有结果时立即返回。
+FREE_SEARCH_BUDGET: float = float(os.getenv("FREE_SEARCH_BUDGET", "45"))
 FREE_SEARCH_CONCURRENCY: int = int(os.getenv("FREE_SEARCH_CONCURRENCY", "5"))
 FREE_SEARCH_RATE_LIMIT: float = float(os.getenv("FREE_SEARCH_RATE_LIMIT", "1.0"))  # QPS，防风控
 FREE_SEARCH_POOL_SIZE: int = int(os.getenv("FREE_SEARCH_POOL_SIZE", "20"))   # 候选池下限（截断交给 select_top）
@@ -178,6 +184,10 @@ PIPELINE_TIMEOUT_QUEUE: int = 10       # 事件队列等待超时
 PIPELINE_TIMEOUT_FETCH: int = 40       # 单次抓取超时（拉长以容纳 crawl4ai 慢路径 20s + 前两级）
 PIPELINE_TIMEOUT_SUMMARIZE: int = 180   # 单次 AI 摘要超时（长摘要输入全量 + 输出 1500-3000 字，实测并发下可达 2.5 分钟）
 PIPELINE_TIMEOUT_SYNC: int = 30        # 同步桥接超时 (_run_async)
+# 提取关键词时随 prompt 下发的「已有卡片标题」上限（0=关闭）。
+# 目的：让模型直接避开已有主题，而不是先提一遍、再被标题预检/向量合并逐条丢掉
+# （那是白花一轮「搜索+抓取+摘要+生成」）。标题约 8 字/条，80 条约 640 字 ≈ 400 tokens。
+EXTRACT_EXCLUDE_TITLES_MAX: int = int(os.getenv("KD_EXTRACT_EXCLUDE_TITLES_MAX", "80"))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -237,6 +247,10 @@ LOCAL_ACCOUNT_USER: str = os.getenv("LOCAL_ACCOUNT_USER", "local").strip() or "l
 
 # 并发任务限制
 MAX_CONCURRENT_TASKS: int = 5       # 每用户最大并发搜索任务数
+# 任务空闲取消宽限（秒）：SSE 订阅者归零后等多久才取消后台任务。
+# 前端切会话/刷新页面会让连接短暂中断（App 重新挂载后才重连），30s 会把正在跑的
+# 收集/延申任务静默杀掉且前端收不到任何事件——默认放宽到 300s（见 models/task.py）。
+IDLE_CANCEL_GRACE_SECONDS: int = int(os.getenv("KD_IDLE_CANCEL_GRACE", "300"))
 
 # Rate Limiting
 RATE_LIMIT_DEFAULT: str = os.getenv("RATE_LIMIT_DEFAULT", "30/minute")

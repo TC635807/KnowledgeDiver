@@ -25,9 +25,11 @@ searxng     公共实例元搜索，多实例自动切换（国内实例多不�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -38,6 +40,7 @@ from backend.config import (
     ANYSEARCH_API_URL,
     BING_MARKET,
     FREE_SEARCH_BING_PAGES,
+    FREE_SEARCH_BUDGET,
     FREE_SEARCH_CONCURRENCY,
     FREE_SEARCH_ENGINES,
     FREE_SEARCH_POOL_SIZE,
@@ -183,21 +186,40 @@ def query_tokens(query: str) -> List[str]:
 # 误杀「只匹配了查询后半段」的正常结果。
 _RELEVANCE_MIN_COVERAGE = 0.35
 
+# 单条结果的「强命中」阈值：整批平均会被「少数金结果 + 多数跑题结果」拉垮
+# （实测 anysearch 10 条里 2 条完全对题，均值仍被压到 0.25 而整批被否）。
+# 只要有一条结果把查询的多数 n-gram 都命中，就认为这个 SERP 可用。
+_RELEVANCE_MIN_HIT = 0.60
 
-def relevance_coverage(query: str, hits: List[Hit]) -> float:
-    """结果集与查询的平均 n-gram 词面重合度（0~1）。"""
+
+def _hit_coverages(query: str, hits: List[Hit]) -> List[float]:
+    """每条结果对查询 n-gram 的命中比例（0~1）。查询无 token 时返回空列表。"""
     tokens = query_tokens(query)
     if not tokens:
-        return 1.0
+        return []
     covs: List[float] = []
     for h in hits:
         hay = f"{h.title} {h.snippet} {h.url}".lower()
         if not hay.strip():
             continue
         covs.append(sum(1 for t in tokens if t.lower() in hay) / len(tokens))
+    return covs
+
+
+def relevance_coverage(query: str, hits: List[Hit]) -> float:
+    """结果集与查询的平均 n-gram 词面重合度（0~1）。"""
+    covs = _hit_coverages(query, hits)
     if not covs:
         return 1.0
     return sum(covs) / len(covs)
+
+
+def best_hit_coverage(query: str, hits: List[Hit]) -> float:
+    """单条结果里最高的重合度（0~1）。"""
+    covs = _hit_coverages(query, hits)
+    if not covs:
+        return 1.0
+    return max(covs)
 
 
 def looks_relevant(query: str, hits: List[Hit]) -> bool:
@@ -210,13 +232,21 @@ def looks_relevant(query: str, hits: List[Hit]) -> bool:
          继续回退到下一个引擎。否则链会在第一个非空结果上停住 —— 这正是「Bing 没
          搜到东西却不再回退到 exa-mcp」的原因。
 
+    判定用两条任一成立即可（OR）：
+      - 整批平均重合度 ≥ _RELEVANCE_MIN_COVERAGE（原口径，防「整页跑题」）；
+      - 单条结果重合度 ≥ _RELEVANCE_MIN_HIT（防「少数金结果被多数跑题结果拉垮」——
+        实测 anysearch 10 条里 2 条完全对题，均值仍被压到 0.25 而整批被否）。
+
     纯符号查询、或结果完全没有可判定文本时不拦截（宁可不判，不可误杀）。
     """
     if not hits:
         return False
     if not query_tokens(query):
         return True
-    return relevance_coverage(query, hits) >= _RELEVANCE_MIN_COVERAGE
+    return (
+        relevance_coverage(query, hits) >= _RELEVANCE_MIN_COVERAGE
+        or best_hit_coverage(query, hits) >= _RELEVANCE_MIN_HIT
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -369,6 +399,7 @@ class FreeSearchClient(BaseSearchClient):
         user_agent: str = FREE_SEARCH_USER_AGENT,
         max_concurrent: int = FREE_SEARCH_CONCURRENCY,
         rate_per_sec: float = FREE_SEARCH_RATE_LIMIT,
+        budget: float = FREE_SEARCH_BUDGET,
     ):
         # max_retries=0：重试语义由「引擎回退链」承担。单引擎失败不再原地重试，
         # 避免一个被墙的引擎把整次搜索拖满超时。
@@ -388,6 +419,9 @@ class FreeSearchClient(BaseSearchClient):
         self._searxng_instances = searxng_instances or SEARXNG_INSTANCES
         self._anysearch_api_key = anysearch_api_key or ""
         self._user_agent = user_agent
+        # 引擎链总预算（秒）。<=0 表示不限。被墙的引擎（ddg 15s 超时、searxng 无响应）
+        # 会把一次查询拖到 40s+；有预算就能保证「查询一定在有限时间内返回」。
+        self._budget = float(budget) if budget and float(budget) > 0 else 0.0
 
         self.last_engine: Optional[str] = None
         self.attempts: List[EngineAttempt] = []
@@ -494,14 +528,36 @@ class FreeSearchClient(BaseSearchClient):
         # 记录「有结果但整体跑题」里相对最相关的一批：如果所有引擎都不合格，
         # 就退回它，而不是空手而归（与 select_top 的相关性门槛同一原则）。
         best_fallback: Optional[tuple] = None  # (coverage, name, hits)
+        # 引擎链总预算：被墙引擎（ddg 15s 超时 / searxng 无响应）会把一次查询拖到
+        # 40s+，预算用尽即停止尝试后续引擎（已有结果时早已 return）。
+        deadline = (time.monotonic() + self._budget) if self._budget > 0 else None
 
         for name in self._engines:
             fn = ENGINE_REGISTRY.get(name)
             if fn is None:
                 self.attempts.append(EngineAttempt(name, False, error="unknown engine"))
                 continue
+            remaining: Optional[float] = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.attempts.append(EngineAttempt(name, False, error="budget exhausted"))
+                    logger.warning(
+                        "[FreeSearch] 引擎链预算（%.0fs）用尽，跳过剩余引擎（自 %s 起）",
+                        self._budget, name,
+                    )
+                    break
             try:
-                hits = await fn(self, query, pool)
+                hits = await asyncio.wait_for(fn(self, query, pool), timeout=remaining)
+            except asyncio.TimeoutError:
+                reason = "timeout"
+                self.attempts.append(EngineAttempt(name, False, error=reason))
+                logger.warning(
+                    "[FreeSearch] 引擎 %s 失败: timeout（单请求上限 %ss，剩余预算 %s）",
+                    name, self._timeout,
+                    f"{remaining:.1f}s" if remaining is not None else "不限",
+                )
+                continue
             except Exception as e:
                 reason = str(e) or e.__class__.__name__
                 self.attempts.append(EngineAttempt(name, False, error=reason))
@@ -518,15 +574,18 @@ class FreeSearchClient(BaseSearchClient):
             # 回退。否则链会在第一个非空结果上停住 —— 这正是「Bing 没搜到东西却不再
             # 回退到 exa-mcp」的原因。
             coverage = relevance_coverage(query, hits)
-            if coverage < _RELEVANCE_MIN_COVERAGE:
+            best_hit = best_hit_coverage(query, hits)
+            if coverage < _RELEVANCE_MIN_COVERAGE and best_hit < _RELEVANCE_MIN_HIT:
                 self.attempts.append(
                     EngineAttempt(name, False, count=len(hits), error="irrelevant SERP")
                 )
                 logger.info(
-                    "[FreeSearch] 引擎 %s 返回 %d 条但与查询无关（重合度 %.2f），尝试下一个",
+                    "[FreeSearch] 引擎 %s 返回 %d 条但与查询无关"
+                    "（平均重合度 %.2f / 最佳单条 %.2f），尝试下一个",
                     name,
                     len(hits),
                     coverage,
+                    best_hit,
                 )
                 if best_fallback is None or coverage > best_fallback[0]:
                     best_fallback = (coverage, name, hits)

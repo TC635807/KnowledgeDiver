@@ -93,7 +93,8 @@ class PipelineAPI:
         Args:
             keyword: 搜索关键词
             max_sources: 最大搜索来源数（默认 5）
-            search_level: 搜索级别（default/lower/sibling/parent）
+            search_level: 搜索级别（default/downstream/peer/upstream，即 默认/下级/平级/上级）；
+                仅影响「提取哪些主题」，不影响搜索、抓取与合并
             search_provider: 搜索服务商（free/bocha/baidu/exa）
 
         Returns:

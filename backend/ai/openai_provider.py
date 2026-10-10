@@ -9,12 +9,13 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import AsyncIterator, Optional, List
 
 import httpx
 from openai import AsyncOpenAI
 
-from backend.config import AI_PROXY_URL
+from backend.config import AI_PROXY_URL, AI_REQUEST_TIMEOUT
 
 from .provider import AIConfig, AIProvider, TopicCluster, GeneratedCard
 
@@ -139,7 +140,7 @@ class OpenAIProvider(AIProvider):
     _api_semaphore: Optional[asyncio.Semaphore] = None
     _api_concurrency: int = 10  # 默认并发数
 
-    def __init__(self, config: AIConfig, http_client: Optional[AsyncOpenAI] = None, retry_limit: int = 3, timeout: float = 180.0):
+    def __init__(self, config: AIConfig, http_client: Optional[AsyncOpenAI] = None, retry_limit: int = 3, timeout: float = AI_REQUEST_TIMEOUT):
         self.config = config
         self._http_client = http_client
         self.retry_limit = retry_limit    # 最大重试次数
@@ -195,15 +196,30 @@ class OpenAIProvider(AIProvider):
         if sem is None:
             OpenAIProvider._api_semaphore = asyncio.Semaphore(OpenAIProvider._api_concurrency)
             sem = OpenAIProvider._api_semaphore
+        # 排队等待必须可见：以前这段时间没有任何日志，用户只看到 UI 停在
+        # 「正在从卡片内容提取关键词...」（AI_CONCURRENCY=2 时多任务下常排队 60s+）。
+        queued_at = time.monotonic()
+        if sem.locked():
+            logger.info(
+                "[AI] 并发槽位已满（上限 %d），排队等待中...",
+                OpenAIProvider._api_concurrency,
+            )
         async with sem:
+            waited = time.monotonic() - queued_at
+            if waited >= 0.5:
+                logger.info("[AI] 获得并发槽位（排队 %.1fs）", waited)
             messages = [{"role": "user", "content": prompt}]
             retries = 0
+            call_started = time.monotonic()
             while True:
                 try:
                     logger.info(f"[AI] Calling API: {self.config.api_url}, model={self.config.model}")
                     async for chunk in self._create_stream(messages):
                         yield chunk
-                    logger.info("[AI] Streaming completed successfully")
+                    logger.info(
+                        "[AI] Streaming completed successfully in %.1fs",
+                        time.monotonic() - call_started,
+                    )
                     return
                 except Exception as e:
                     logger.error(f"[AI] Request failed: type={type(e).__name__}, message={str(e)}")
@@ -342,7 +358,7 @@ JSON："""
         except json.JSONDecodeError:
             return {}
 
-    def _build_extract_prompt(self, text: str, max_topics: int, search_level: str, exclude_title: str | None = None, source_title: str | None = None) -> str:
+    def _build_extract_prompt(self, text: str, max_topics: int, search_level: str, exclude_title: str | None = None, source_title: str | None = None, exclude_titles: list[str] | None = None) -> str:
         """构建主题提取的 prompt，根据搜索层级选择不同指令。
 
         source_title: 源卡标题——领域锚定职责所在。方案 B 起搜索词不再拼接
@@ -387,18 +403,41 @@ JSON："""
 - 例如：如果内容是"机器学习"，提取"人工智能"、"计算机科学"、"数据科学"等""",
         }
 
+        # 已有卡片标题清单（防重复提取）。原先模型看不到库里已有什么，只能先提出来、
+        # 再由标题预检/向量合并丢掉——白花一轮「搜索+抓取+摘要+生成」。见 pipeline/exclusions.py。
+        #
+        # 「禁止重复之后改提什么」必须跟随搜索颗粒度，不能写死：颗粒度由用户在
+        # 「延申」下拉里选（默认/下级/平级/上级），若用户选了「上级搜索」却被告知
+        # 改提子概念，两条指令会互相打架。
+        existing_redirect = {
+            "downstream": "请改提它们**更深一层的子概念**",
+            "peer": "请改提**与它们同层次的兄弟主题**（同类但不同的对象）",
+            "upstream": "请改提**更上层的父概念 / 所属更大领域**",
+            "default": "请改提与它们**不同的具体主题**",
+        }.get(search_level, "请改提与它们**不同的具体主题**")
+        existing_rule = ""
+        titles = [str(t).strip() for t in (exclude_titles or []) if str(t).strip()]
+        if titles:
+            existing_rule = (
+                f"\n- **已有卡片（禁止重复）**：本知识库已存在下列 {len(titles)} 个卡片主题，"
+                "禁止再提取与它们同名、近义或同义改写的主题；"
+                f"若当前内容主要就是在展开这些主题，{existing_redirect}：\n"
+                + "；".join(titles)
+            )
+
         instruction = level_specific.get(search_level, level_specific["default"])
 
         return f"""{base_instruction}
 {instruction}
 {exclude_rule}
 {source_rule}
+{existing_rule}
 内容：
 {text[:12000]}
 
 JSON数组："""
 
-    async def extract_related_topics(self, text: str, max_topics: int = 10, search_level: str = "default", exclude_title: str | None = None, source_title: str | None = None) -> list[str]:
+    async def extract_related_topics(self, text: str, max_topics: int = 10, search_level: str = "default", exclude_title: str | None = None, source_title: str | None = None, exclude_titles: list[str] | None = None) -> list[str]:
         """从内容中提取相关的延申搜索主题。
 
         Args:
@@ -408,11 +447,15 @@ JSON数组："""
             exclude_title: 源卡片标题，禁止提取与其相同/近义的主题（防重复卡）
             source_title: 源卡标题，声明领域锚定——歧义短词必须自带领域限定
                 （方案 B：搜索词不再拼接源卡标题，输出主题即锚定）
+            exclude_titles: 知识库已有卡片标题清单（随 prompt 下发防重复，见
+                pipeline/exclusions.py）
 
         Returns:
             主题名称列表
         """
-        prompt = self._build_extract_prompt(text, max_topics, search_level, exclude_title, source_title)
+        prompt = self._build_extract_prompt(
+            text, max_topics, search_level, exclude_title, source_title, exclude_titles,
+        )
         result = await self.generate(prompt)
         try:
             topics = json.loads(_extract_json_from_response(result))
